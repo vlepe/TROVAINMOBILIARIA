@@ -21,13 +21,23 @@ Ver el documento de diseño completo ("Diseno_Odoo_EasyBroker_Portales.docx") pa
 ## Configuración en GitHub
 
 1. Este contenido ya vive en el repositorio `vlepe/TROVAINMOBILIARIA`, en la carpeta `integrations/odoo-easybroker-sync/`. El workflow de GitHub Actions vive en `.github/workflows/sync-viviendas.yml` (tiene que estar en la raíz del repo para que GitHub lo detecte).
-2. En el repo, ve a **Settings → Secrets and variables → Actions** y crea estos secretos:
+2. En el repo, ve a **Settings → Secrets and variables → Actions** y crea estas variables y secretos.
 
-   | Secreto | Valor |
-   |---|---|
-    | `API_ODOO_TROVA` | Un JSON de una sola línea con las 4 credenciales de Odoo: `{"url": "https://trovainmobiliaria.odoo.com", "db": "trovainmobiliaria", "username": "usuario@ejemplo.com", "api_key": "tu_api_key"}` — usa la URL base **sin** `/odoo` al final (el XML-RPC vive en la raíz del dominio), el nombre real de la base de datos (confírmalo en Ajustes > Técnico > Base de datos), un usuario técnico dedicado (no una cuenta personal) y su API Key (Ajustes > Mi perfil > Seguridad de la cuenta > Claves de API) |
+    **Variables** (no son sensibles, se guardan en texto plano):
+
+    | Variable | Valor |
+    |---|---|
+    | `ODOO_URL` | URL base de tu instancia, **sin** `/odoo` al final: `https://trovainmobiliaria.odoo.com` (el XML-RPC vive en la raíz del dominio, no bajo `/odoo`, que es solo la ruta del cliente web) |
+    | `ODOO_DB` | Nombre de la base de datos de Odoo (normalmente el mismo subdominio, ej. `trovainmobiliaria`; confírmalo en Ajustes > Técnico > Base de datos, o pregúntale a tu partner de Odoo si no estás seguro) |
+    | `ODOO_USERNAME` | Usuario (correo) que hará las lecturas/escrituras — idealmente un usuario técnico dedicado, no una cuenta personal |
+
+    **Secretos** (valores sensibles, GitHub los oculta):
+
+    | Secreto | Valor |
+    |---|---|
+    | `API_ODOO_TROVA` | API Key del usuario de Odoo indicado arriba (Ajustes > Mi perfil > Seguridad de la cuenta > Claves de API) |
     | `API_EASY_BROKER` | El API key que ya generaste en EasyBroker |
-4. Sube el repositorio a GitHub. El workflow en `.github/workflows/sync-viviendas.yml` empieza a correr solo cada 10 minutos.
+3. Sube el repositorio a GitHub. El workflow en `.github/workflows/sync-viviendas.yml` empieza a correr solo cada 10 minutos.
 
 ## Probarlo sin esperar al cron
 
