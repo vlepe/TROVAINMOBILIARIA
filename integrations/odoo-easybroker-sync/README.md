@@ -25,13 +25,9 @@ Ver el documento de diseño completo ("Diseno_Odoo_EasyBroker_Portales.docx") pa
 
    | Secreto | Valor |
    |---|---|
-   | `ODOO_URL` | URL base de tu instancia, **sin** `/odoo` al final: `https://trovainmobiliaria.odoo.com` (el XML-RPC vive en la raíz del dominio, no bajo `/odoo`, que es solo la ruta del cliente web) |
-   | `ODOO_DB` | Nombre de la base de datos de Odoo (normalmente el mismo subdominio, ej. `trovainmobiliaria`; confírmalo en Ajustes > Técnico > Base de datos, o pregúntale a tu partner de Odoo si no estás seguro) |
-   | `ODOO_USERNAME` | Usuario (correo) que hará las lecturas/escrituras — idealmente un usuario técnico dedicado, no una cuenta personal |
-   | `ODOO_API_KEY` | API Key de ese usuario (Ajustes > Mi perfil > Seguridad de la cuenta > Claves de API) |
-   | `EASYBROKER_API_KEY` | El API key que ya generaste en EasyBroker |
-
-3. Sube el repositorio a GitHub. El workflow en `.github/workflows/sync-viviendas.yml` empieza a correr solo cada 10 minutos.
+    | `API_ODOO_TROVA` | Un JSON de una sola línea con las 4 credenciales de Odoo: `{"url": "https://trovainmobiliaria.odoo.com", "db": "trovainmobiliaria", "username": "usuario@ejemplo.com", "api_key": "tu_api_key"}` — usa la URL base **sin** `/odoo` al final (el XML-RPC vive en la raíz del dominio), el nombre real de la base de datos (confírmalo en Ajustes > Técnico > Base de datos), un usuario técnico dedicado (no una cuenta personal) y su API Key (Ajustes > Mi perfil > Seguridad de la cuenta > Claves de API) |
+    | `API_EASY_BROKER` | El API key que ya generaste en EasyBroker |
+4. Sube el repositorio a GitHub. El workflow en `.github/workflows/sync-viviendas.yml` empieza a correr solo cada 10 minutos.
 
 ## Probarlo sin esperar al cron
 
