@@ -30,7 +30,6 @@ ANTES DE USARLO EN SERIO:
     paquete, para consultarlo con tu API key).
 """
 
-import json
 import logging
 import os
 import sys
@@ -121,30 +120,8 @@ def env(name):
         sys.exit(1)
     return value
 
-def load_odoo_credentials():
-    """Rellena ODOO_URL / ODOO_DB / ODOO_USERNAME / ODOO_API_KEY a partir del
-    secret combinado ODOO_CREDENTIALS_JSON (API_ODOO_TROVA), si está presente."""
-    raw = os.environ.get("ODOO_CREDENTIALS_JSON")
-    if not raw:
-        return
-    try:
-        creds = json.loads(raw)
-    except json.JSONDecodeError:
-        log.error("ODOO_CREDENTIALS_JSON no es un JSON válido. Revisa el secret API_ODOO_TROVA.")
-        sys.exit(1)
-    mapping = {
-        "url": "ODOO_URL",
-        "db": "ODOO_DB",
-        "username": "ODOO_USERNAME",
-        "api_key": "ODOO_API_KEY",
-    }
-    for key, env_name in mapping.items():
-        if creds.get(key):
-            os.environ[env_name] = str(creds[key])
-
 
 def connect_odoo():
-    load_odoo_credentials()
     url = env("ODOO_URL").rstrip("/")
     db = env("ODOO_DB")
     username = env("ODOO_USERNAME")
