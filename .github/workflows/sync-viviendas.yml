@@ -1,0 +1,33 @@
+name: Sincronizar viviendas Odoo -> EasyBroker
+
+# Se ejecuta cada 10 minutos y también se puede lanzar a mano desde la pestaña
+# "Actions" de GitHub (botón "Run workflow") para probar sin esperar al cron.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r integrations/odoo-easybroker-sync/scripts/requirements.txt
+
+      - name: Ejecutar la sincronización
+        env:
+          ODOO_URL: ${{ secrets.ODOO_URL }}
+          ODOO_DB: ${{ secrets.ODOO_DB }}
+          ODOO_USERNAME: ${{ secrets.ODOO_USERNAME }}
+          ODOO_API_KEY: ${{ secrets.ODOO_API_KEY }}
+          EASYBROKER_API_KEY: ${{ secrets.EASYBROKER_API_KEY }}
+        run: python integrations/odoo-easybroker-sync/scripts/sync_to_easybroker.py
