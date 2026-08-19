@@ -25,9 +25,6 @@ jobs:
 
       - name: Ejecutar la sincronización
         env:
-          ODOO_URL: ${{ secrets.ODOO_URL }}
-          ODOO_DB: ${{ secrets.ODOO_DB }}
-          ODOO_USERNAME: ${{ secrets.ODOO_USERNAME }}
-          ODOO_API_KEY: ${{ secrets.ODOO_API_KEY }}
-          EASYBROKER_API_KEY: ${{ secrets.EASYBROKER_API_KEY }}
+          ODOO_CREDENTIALS_JSON: ${{ secrets.API_ODOO_TROVA }}
+          EASYBROKER_API_KEY: ${{ secrets.API_EASY_BROKER }}
         run: python integrations/odoo-easybroker-sync/scripts/sync_to_easybroker.py
