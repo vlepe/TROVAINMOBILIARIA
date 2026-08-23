@@ -2,10 +2,10 @@ name: Sincronizar viviendas Odoo -> EasyBroker
 
 # Se ejecuta cada 10 minutos y también se puede lanzar a mano desde la pestaña
 # "Actions" de GitHub (botón "Run workflow") para probar sin esperar al cron.
-on:
-  schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch: {}
+#VIC on:
+#VIC  schedule:
+#VIC    - cron: "*/10 * * * *"
+#VIC  workflow_dispatch: {}
 
 jobs:
   sync:
