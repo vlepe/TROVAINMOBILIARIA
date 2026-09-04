@@ -68,7 +68,7 @@ def main():
         db, uid, api_key,
         MODEL, "fields_get",
         [],
-        {"attributes": ["string", "type", "required", "relation"]},
+        {"attributes": ["string", "type", "required", "relation", "selection"]},
     )
 
     rows = []
@@ -76,7 +76,13 @@ def main():
         label = info.get("string", "")
         haystack = f"{technical_name} {label}".lower()
         if show_all or any(kw in haystack for kw in KEYWORDS):
-            rows.append((technical_name, info.get("type", ""), label, info.get("relation") or ""))
+            rows.append((
+                technical_name,
+                info.get("type", ""),
+                label,
+                info.get("relation") or "",
+                info.get("selection") or [],
+            ))
 
     rows.sort(key=lambda r: r[0])
 
@@ -84,13 +90,24 @@ def main():
     type_w = max((len(r[1]) for r in rows), default=10)
     print(f"{'nombre técnico'.ljust(name_w)}  {'tipo'.ljust(type_w)}  etiqueta (lo que ves en pantalla)")
     print("-" * (name_w + type_w + 40))
-    for technical_name, ftype, label, relation in rows:
+    for technical_name, ftype, label, relation, selection in rows:
         extra = f" -> {relation}" if relation else ""
         print(f"{technical_name.ljust(name_w)}  {ftype.ljust(type_w)}  {label}{extra}")
 
     print(f"\n{len(rows)} campo(s) mostrados de {len(fields)} totales en el modelo {MODEL}.")
     if not show_all:
         print("(usa --all para ver los ~200 campos estándar de producto sin filtrar)")
+
+    # Los campos tipo "selection" (menú desplegable) solo aceptan valores
+    # internos exactos al escribir por API -- no cualquier texto. Los
+    # listamos aparte para que se puedan mapear bien antes de importar.
+    selection_rows = [r for r in rows if r[1] == "selection" and r[4]]
+    if selection_rows:
+        print("\nValores permitidos de los campos tipo 'selection':")
+        for technical_name, _ftype, label, _relation, selection in selection_rows:
+            print(f"\n  {technical_name} ({label}):")
+            for value, option_label in selection:
+                print(f"    {value!r} -> {option_label}")
 
 
 if __name__ == "__main__":
