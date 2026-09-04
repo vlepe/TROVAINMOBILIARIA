@@ -4,34 +4,82 @@ Sincroniza viviendas de Odoo hacia EasyBroker (que a su vez las publica en
 Inmuebles24, Vivanuncios, Lamudi, Propiedades.com, etc. si tienes esos
 portales conectados en tu cuenta de EasyBroker).
 
-Cómo funciona (arquitectura completa en el documento de diseño):
-  1. Este script corre en GitHub Actions cada 10 minutos (ver
-     .github/workflows/sync-viviendas.yml).
-  2. Se conecta a Odoo por su API externa (XML-RPC) y busca viviendas
-     marcadas como "lista para publicar" que aún no se han enviado.
-  3. Traduce cada una al formato que espera la API de EasyBroker.
-  4. Llama a POST /properties de EasyBroker (con el API key como header
-     X-Authorization).
-  5. Marca en Odoo el resultado (enviado / error) para que el equipo lo vea.
+Cómo funciona:
+  1. Este script corre en GitHub Actions (ver .github/workflows/sync-viviendas.yml).
+  2. Se conecta a Odoo por su API externa (XML-RPC) y busca productos
+     (modelo product.template, el mismo que ya usa la tienda web) marcados
+     como "Publicado" (is_published = True).
+  3. Traduce cada uno al formato que espera la API de EasyBroker.
+  4. Si el producto no tiene todavía una Referencia (default_code) con
+     formato EasyBroker (EB-...), lo CREA en EasyBroker (POST /properties)
+     y guarda el public_id que regresa de vuelta en default_code -- así la
+     siguiente corrida ya sabe que existe y lo actualiza en vez de
+     duplicarlo. Si ya tiene una Referencia EB-..., lo ACTUALIZA
+     (PUT /properties/{public_id}).
 
-ANTES DE USARLO EN SERIO:
-  - Este script asume nombres de modelo y de campos técnicos que TODAVÍA NO
-    EXISTEN hasta que se construya el modelo "Vivienda" en Odoo Studio (ver
-    sección 4 del documento de diseño). Ajusta las constantes de la sección
-    "CONFIGURACIÓN" más abajo con los nombres técnicos reales.
-  - Para ver el nombre técnico de un campo en Odoo: activa el modo
-    desarrollador (Ajustes > Técnico, o agrega ?debug=1 a la URL), abre el
-    campo en el formulario y usa "Ver información del campo" / "Edit Field"
-    en Studio, o revisa Ajustes > Técnico > Modelos.
-  - Los valores válidos de "property_type" y del tipo de operación en
-    EasyBroker deben confirmarse contra su catálogo real:
-      GET https://api.easybroker.com/v1/property_types
-    (usa scripts/list_easybroker_property_types.py, incluido en este mismo
-    paquete, para consultarlo con tu API key).
+Nombres de campo: confirmados el 19/ago/2026 y el 04/sep/2026 corriendo
+scripts/list_odoo_product_fields.py --all contra la Odoo real de Trova (ver
+integrations/odoo-easybroker-sync/README.md). El modelo real NO es
+"x_vivienda" (ese nunca se construyó) -- son campos x_studio_* agregados
+directo sobre product.template, el mismo modelo de producto de la tienda.
+
+Diseño para no publicar por accidente / no filtrar información sensible:
+  - Solo se consideran productos con is_published = True (el switch
+    "Publicado" que el equipo ya usa para la tienda web).
+  - El campo "status" que se manda a EasyBroker sale de
+    x_studio_estatus_comercial: "Disponible" -> "published"; cualquier otro
+    valor (Apartada/Vendida/Rentada/No publicada) o vacío -> "not_published".
+    Así, para probar una propiedad sin que salga en los portales todavía,
+    basta con dejarla en un estatus comercial distinto de "Disponible".
+  - x_studio_direccion_exacta (la calle y número exactos) solo se manda si
+    x_studio_mostrar_direccion_exacta_en_web está activado. Si no, solo se
+    manda la ubicación pública/aproximada (colonia, municipio, ciudad,
+    estado, x_studio_ubicacion_publica).
+  - Los campos de negocio interno (comisión, situación jurídica, datos del
+    propietario, restricciones de visita, asesor responsable, etc.) NO se
+    mandan a EasyBroker a propósito -- son para uso interno del equipo, no
+    para portales públicos.
+
+Lo que este script SÍ manda a EasyBroker (ver build_easybroker_payload):
+  título, descripción, tipo de inmueble, tipo de operación, precio,
+  estatus (published/not_published), ubicación completa (estado, municipio,
+  ciudad, colonia, código postal, ubicación pública, lat/long, y dirección
+  exacta solo si se autorizó mostrarla), superficie de terreno y de
+  construcción, recámaras, baños completos, medios baños, estacionamientos,
+  y fotos.
+
+Lo que NO manda (y por qué):
+  - x_studio_numero_de_niveles, x_studio_piso, x_studio_antiguedad_anos,
+    x_studio_superficie_privativa_m2, x_studio_orientacion: existen en Odoo
+    pero no se confirmó todavía el nombre exacto que usa la API de
+    EasyBroker para ellos (no aparecen en los datos que trajimos al
+    importar propiedades reales). Agregarlos es un TODO seguro para
+    después, una vez confirmados contra dev.easybroker.com.
+  - x_studio_situacion_juridica, x_studio_comision, x_studio_descuento_estimado,
+    x_studio_valor_estimado_de_mercado, x_studio_documentacion_disponible,
+    x_studio_restricciones_de_visita, x_studio_situacion_de_ocupacion,
+    x_studio_inmueble_ocupado, x_studio_asesor_responsable,
+    x_studio_propietario_o_proveedor, x_studio_formas_de_pago_aceptadas,
+    x_studio_servicios_disponibles: son información de negocio/interna, no
+    debe salir a los portales públicos.
+  - x_studio_tour_virtual, x_studio_video_de_la_propiedad,
+    x_studio_texto_para_whatsapp, x_studio_etiqueta_principal,
+    x_studio_url_de_google_maps: no se confirmó que EasyBroker tenga un
+    campo equivalente en su API de creación/actualización de propiedades.
+
+Fotos: se arma una URL pública por cada imagen de la galería del producto
+(product_template_image_ids) usando el visor de imágenes estándar de Odoo
+(/web/image/product.image/<id>/image_1920) y se manda esa lista de URLs en
+property_images, igual que como EasyBroker las entrega al leer una
+propiedad (confirmado en import_from_easybroker.py). ESTO NO SE HA
+VERIFICADO EN VIVO todavía -- revisa la primera propiedad de prueba en el
+panel de EasyBroker para confirmar que las fotos sí aparecen.
 """
 
+import base64
 import logging
 import os
+import re
 import sys
 import time
 import xmlrpc.client
@@ -45,78 +93,110 @@ logging.basicConfig(
 log = logging.getLogger("sync")
 
 # --------------------------------------------------------------------------
-# CONFIGURACIÓN — ajustar esto una vez que exista el modelo "Vivienda" en
-# Odoo Studio. Los nombres de abajo son un punto de partida razonable (así
-# es como Studio suele nombrar los campos que crea), pero HAY QUE
-# CONFIRMARLOS contra el modelo real antes de usar esto en producción.
+# CONFIGURACIÓN
 # --------------------------------------------------------------------------
 
-ODOO_MODEL = "x_vivienda"
+ODOO_MODEL = "product.template"
 
-# Campo booleano que el equipo marca en Odoo para disparar la publicación.
-FIELD_READY = "x_studio_listo_para_publicar"
+# Campo estándar de Odoo/eCommerce: solo se sincronizan productos publicados.
+FIELD_READY = "is_published"
 
-# Campo de selección donde este script anota el resultado del envío.
-# Valores usados por el script: "enviado" / "error".
-FIELD_SYNC_STATUS = "x_studio_estatus_de_sincronizacion"
+# Referencia interna: si ya tiene forma "EB-XXXXXX" quiere decir que el
+# producto ya existe en EasyBroker (o se importó de ahí, o ya se sincronizó
+# antes) y hay que actualizar en vez de crear.
+FIELD_REFERENCE = "default_code"
 
-# Campo de texto donde se guarda el id de EasyBroker tras un envío exitoso.
-FIELD_EASYBROKER_ID = "x_studio_easybroker_id"
+FIELD_NAME = "name"
+FIELD_WEB_TITLE = "x_studio_titulo_comercial_web"  # si existe, se prefiere sobre "name"
+FIELD_PRICE = "list_price"
+FIELD_LONG_DESCRIPTION = "x_studio_descripcion_completa"
+FIELD_SHORT_DESCRIPTION = "x_studio_descripcion_corta"
 
-# Campo de texto donde se guarda el último mensaje de error, si lo hay.
-FIELD_SYNC_ERROR = "x_studio_ultimo_error_sincronizacion"
+FIELD_PROPERTY_TYPE = "x_studio_tipo_de_inmueble"       # selection
+FIELD_OPERATION_TYPE = "x_studio_tipo_de_operacion"      # selection
+FIELD_COMMERCIAL_STATUS = "x_studio_estatus_comercial"   # selection
 
-# Mapeo de los campos de la vivienda en Odoo -> nombre esperado en el
-# payload que arma este script (ver build_easybroker_payload más abajo).
-FIELD_TITLE = "x_studio_titulo"
-FIELD_DESCRIPTION = "x_studio_descripcion"
-FIELD_PROPERTY_TYPE = "x_studio_tipo_de_propiedad"  # selección en Odoo
-FIELD_OPERATION_TYPE = "x_studio_tipo_de_operacion"  # 'venta' / 'renta'
-FIELD_PRICE = "x_studio_precio"
-FIELD_CURRENCY = "x_studio_moneda"  # 'MXN' / 'USD'
-FIELD_ADDRESS = "x_studio_direccion"
-FIELD_STREET_NUMBER = "x_studio_numero"
-FIELD_NEIGHBORHOOD = "x_studio_colonia"
+FIELD_STATE = "x_studio_estado"                          # many2one -> res.country.state
+FIELD_MUNICIPALITY = "x_studio_municipio_o_alcaldia"
 FIELD_CITY = "x_studio_ciudad"
-FIELD_STATE = "x_studio_estado"
+FIELD_NEIGHBORHOOD = "x_studio_colonia"
 FIELD_ZIP = "x_studio_codigo_postal"
+FIELD_PUBLIC_LOCATION = "x_studio_ubicacion_publica"
+FIELD_EXACT_ADDRESS = "x_studio_direccion_exacta"
+FIELD_SHOW_EXACT_ADDRESS = "x_studio_mostrar_direccion_exacta_en_web"
 FIELD_LAT = "x_studio_latitud"
 FIELD_LNG = "x_studio_longitud"
-FIELD_CONSTRUCTION_SIZE = "x_studio_m2_construccion"
-FIELD_LOT_SIZE = "x_studio_m2_terreno"
+
+FIELD_LOT_SIZE = "x_studio_superficie_de_terreno_m2"
+FIELD_CONSTRUCTION_SIZE = "x_studio_superficie_de_construccion_m2"
 FIELD_BEDROOMS = "x_studio_recamaras"
-FIELD_BATHROOMS = "x_studio_banos"
+FIELD_BATHROOMS_FULL = "x_studio_banos_completos"
+FIELD_BATHROOMS_HALF = "x_studio_medios_banos"
 FIELD_PARKING = "x_studio_estacionamientos"
-FIELD_PHOTO_URLS = "x_studio_fotos_urls"  # texto con URLs separadas por coma
 
-# TODO: confirmar estos símbolos contra GET /property_types de EasyBroker
-# antes de usar el script. Los valores de la izquierda son la selección que
-# el equipo captura en Odoo; los de la derecha deben ser EXACTAMENTE el
-# "value"/symbol que EasyBroker espera.
-PROPERTY_TYPE_MAP = {
-    "casa": "Casa",
-    "departamento": "Apartamento",
-    "terreno": "Terreno",
-    "oficina": "Oficina",
-}
-
-# TODO: confirmar el nombre exacto que EasyBroker espera para el tipo de
-# operación dentro del arreglo "operations" (ver documentación de
-# dev.easybroker.com/docs/propiedades).
-OPERATION_TYPE_MAP = {
-    "venta": "sale",
-    "renta": "rental",
-}
+FIELD_IMAGE_IDS = "product_template_image_ids"
 
 EASYBROKER_BASE_URL = "https://api.easybroker.com/v1"
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 5
 
+DEFAULT_CURRENCY = "MXN"
 
-def env(name):
-    value = os.environ.get(name)
-    if not value:
-        log.error("Falta la variable de entorno %s (revisa los GitHub Secrets).", name)
+REFERENCE_PATTERN = re.compile(r"^EB-[A-Za-z0-9]+$")
+
+# Confirmado el 04/sep/2026 corriendo scripts/list_easybroker_property_types.py
+# contra la cuenta real de EasyBroker de Trova (GET /property_types).
+# x_studio_tipo_de_inmueble en Odoo solo tiene estas 8 opciones fijas; las
+# que no tienen un símbolo claro de EasyBroker (Desarrollo, Otro) se dejan
+# sin mapear a propósito -- ver map_property_type().
+PROPERTY_TYPE_MAP = {
+    "Casa": "house",
+    "Departamento": "apartment",
+    "Terreno": "lot",
+    "Local comercial": "retail_space",
+    "Bodega": "industrial_warehouse",
+    "Oficina": "office",
+    # "Desarrollo" y "Otro" no tienen un símbolo confiable en el catálogo de
+    # EasyBroker -- se dejan sin mapear (ver map_property_type).
+}
+
+# Confirmado con la propia documentación de EasyBroker y con los datos
+# reales leídos en import_from_easybroker.py.
+OPERATION_TYPE_MAP = {
+    "Venta": "sale",
+    "Renta": "rental",
+}
+
+
+def map_property_type(odoo_value):
+    """Traduce x_studio_tipo_de_inmueble (Odoo) al symbol real de EasyBroker.
+
+    Regresa None si no hay un mapeo confiable -- en ese caso NO se sincroniza
+    esa propiedad (mejor eso que mandar un tipo inventado a un portal
+    público). Ver el log de la corrida para ver cuáles se saltaron.
+    """
+    return PROPERTY_TYPE_MAP.get(odoo_value)
+
+
+def map_operation_type(odoo_value):
+    return OPERATION_TYPE_MAP.get(odoo_value)
+
+
+def map_status(commercial_status):
+    """"Disponible" es la única situación comercial que debe salir como
+    publicada en los portales. Cualquier otra cosa (Apartada, Vendida,
+    Rentada, No publicada, o vacío) se manda como "not_published" -- así
+    una propiedad vendida no se sigue anunciando como disponible.
+    """
+    if commercial_status == "Disponible":
+        return "published"
+    return "not_published"
+
+
+def env(name, required=True, default=None):
+    value = os.environ.get(name, default)
+    if required and not value:
+        log.error("Falta la variable de entorno %s (revisa los GitHub Secrets/Variables).", name)
         sys.exit(1)
     return value
 
@@ -134,105 +214,153 @@ def connect_odoo():
         sys.exit(1)
 
     models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
-    return db, uid, api_key, models
+    return url, db, uid, api_key, models
 
-def fetch_pending_properties(db, uid, api_key, models):
+
+def strip_html(value):
+    if not value:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def fetch_ready_products(db, uid, api_key, models):
     fields = [
-        FIELD_TITLE, FIELD_DESCRIPTION, FIELD_PROPERTY_TYPE, FIELD_OPERATION_TYPE,
-        FIELD_PRICE, FIELD_CURRENCY, FIELD_ADDRESS, FIELD_STREET_NUMBER,
-        FIELD_NEIGHBORHOOD, FIELD_CITY, FIELD_STATE, FIELD_ZIP, FIELD_LAT, FIELD_LNG,
-        FIELD_CONSTRUCTION_SIZE, FIELD_LOT_SIZE, FIELD_BEDROOMS, FIELD_BATHROOMS,
-        FIELD_PARKING, FIELD_PHOTO_URLS,
+        FIELD_REFERENCE, FIELD_NAME, FIELD_WEB_TITLE, FIELD_PRICE,
+        FIELD_LONG_DESCRIPTION, FIELD_SHORT_DESCRIPTION,
+        FIELD_PROPERTY_TYPE, FIELD_OPERATION_TYPE, FIELD_COMMERCIAL_STATUS,
+        FIELD_STATE, FIELD_MUNICIPALITY, FIELD_CITY, FIELD_NEIGHBORHOOD,
+        FIELD_ZIP, FIELD_PUBLIC_LOCATION, FIELD_EXACT_ADDRESS,
+        FIELD_SHOW_EXACT_ADDRESS, FIELD_LAT, FIELD_LNG,
+        FIELD_LOT_SIZE, FIELD_CONSTRUCTION_SIZE, FIELD_BEDROOMS,
+        FIELD_BATHROOMS_FULL, FIELD_BATHROOMS_HALF, FIELD_PARKING,
+        FIELD_IMAGE_IDS,
     ]
-    domain = [
-        (FIELD_READY, "=", True),
-        (FIELD_SYNC_STATUS, "!=", "enviado"),
-    ]
-    odoo_url = env("ODOO_URL").rstrip("/")
+    domain = [(FIELD_READY, "=", True)]
     return models.execute_kw(
         db, uid, api_key,
         ODOO_MODEL, "search_read",
         [domain, ["id"] + fields],
-    ), odoo_url
+    )
 
-def build_easybroker_payload(record):
-    operation_key = OPERATION_TYPE_MAP.get(record.get(FIELD_OPERATION_TYPE))
-    property_type = PROPERTY_TYPE_MAP.get(record.get(FIELD_PROPERTY_TYPE))
+
+def many2one_name(value):
+    """Los campos many2one regresan [id, "Nombre a mostrar"] por XML-RPC, o
+    False si están vacíos."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return value[1]
+    return None
+
+
+def build_image_urls(odoo_url, image_ids):
+    # NOTA: no verificado en vivo todavía -- confirma con la primera
+    # propiedad de prueba que EasyBroker sí puede descargar estas URLs.
+    return [f"{odoo_url}/web/image/product.image/{image_id}/image_1920" for image_id in image_ids]
+
+
+def build_easybroker_payload(record, odoo_url):
+    property_type = map_property_type(record.get(FIELD_PROPERTY_TYPE))
+    operation_type = map_operation_type(record.get(FIELD_OPERATION_TYPE))
+
+    title = record.get(FIELD_WEB_TITLE) or record.get(FIELD_NAME) or record.get(FIELD_REFERENCE) or ""
+    description = strip_html(record.get(FIELD_LONG_DESCRIPTION)) or strip_html(record.get(FIELD_SHORT_DESCRIPTION))
+
+    state_name = many2one_name(record.get(FIELD_STATE))
+    municipality = record.get(FIELD_MUNICIPALITY) or ""
+    city = record.get(FIELD_CITY) or municipality
+    neighborhood = record.get(FIELD_NEIGHBORHOOD) or ""
+    public_location = record.get(FIELD_PUBLIC_LOCATION) or ", ".join(
+        filter(None, [neighborhood, city, state_name])
+    )
+
+    location = {
+        "name": public_location,
+        "postal_code": record.get(FIELD_ZIP) or "",
+        # Se manda con las dos llaves posibles (state/province,
+        # municipality/city, neighborhood/colony) porque no está 100%
+        # confirmado cuál usa la API de EasyBroker para escritura -- son
+        # llaves extra inofensivas si alguna no aplica.
+        "state": state_name or "",
+        "province": state_name or "",
+        "municipality": municipality,
+        "city": city,
+        "neighborhood": neighborhood,
+        "colony": neighborhood,
+    }
+    if record.get(FIELD_SHOW_EXACT_ADDRESS) and record.get(FIELD_EXACT_ADDRESS):
+        location["street"] = record[FIELD_EXACT_ADDRESS]
+    if record.get(FIELD_LAT) and record.get(FIELD_LNG):
+        location["latitude"] = record[FIELD_LAT]
+        location["longitude"] = record[FIELD_LNG]
 
     payload = {
-        "title": record.get(FIELD_TITLE) or "",
-        "description": (record.get(FIELD_DESCRIPTION) or "")[:4000],
+        "title": title,
+        "description": description[:4000],
         "property_type": property_type,
-        "status": "published",
+        "status": map_status(record.get(FIELD_COMMERCIAL_STATUS)),
         "operations": [
             {
-                "type": operation_key,
+                "type": operation_type,
                 "amount": record.get(FIELD_PRICE) or 0,
-                "currency": record.get(FIELD_CURRENCY) or "MXN",
+                "currency": DEFAULT_CURRENCY,
             }
         ],
-        "location": {
-            "name": ", ".join(
-                filter(None, [
-                    record.get(FIELD_ADDRESS),
-                    record.get(FIELD_NEIGHBORHOOD),
-                    record.get(FIELD_CITY),
-                    record.get(FIELD_STATE),
-                ])
-            ),
-            "street": record.get(FIELD_ADDRESS) or "",
-            "exterior_number": record.get(FIELD_STREET_NUMBER) or "",
-            "postal_code": record.get(FIELD_ZIP) or "",
-        },
+        "location": location,
     }
 
-    if record.get(FIELD_LAT) and record.get(FIELD_LNG):
-        payload["location"]["latitude"] = record[FIELD_LAT]
-        payload["location"]["longitude"] = record[FIELD_LNG]
-
-    if record.get(FIELD_CONSTRUCTION_SIZE):
-        payload["construction_size"] = record[FIELD_CONSTRUCTION_SIZE]
     if record.get(FIELD_LOT_SIZE):
         payload["lot_size"] = record[FIELD_LOT_SIZE]
+    if record.get(FIELD_CONSTRUCTION_SIZE):
+        payload["construction_size"] = record[FIELD_CONSTRUCTION_SIZE]
     if record.get(FIELD_BEDROOMS):
         payload["bedrooms"] = record[FIELD_BEDROOMS]
-    if record.get(FIELD_BATHROOMS):
-        payload["bathrooms"] = record[FIELD_BATHROOMS]
+    if record.get(FIELD_BATHROOMS_FULL):
+        payload["bathrooms"] = record[FIELD_BATHROOMS_FULL]
+    if record.get(FIELD_BATHROOMS_HALF):
+        payload["half_bathrooms"] = record[FIELD_BATHROOMS_HALF]
     if record.get(FIELD_PARKING):
         payload["parking_spaces"] = record[FIELD_PARKING]
 
-    photo_urls = record.get(FIELD_PHOTO_URLS)
-    if photo_urls:
-        urls = [u.strip() for u in photo_urls.split(",") if u.strip()]
-        if urls:
-            payload["property_images"] = [{"url": u} for u in urls]
+    image_ids = record.get(FIELD_IMAGE_IDS) or []
+    if image_ids:
+        urls = build_image_urls(odoo_url, image_ids)
+        payload["property_images"] = [{"url": u} for u in urls]
 
     return payload
 
-def send_to_easybroker(payload):
-    api_key = env("EASYBROKER_API_KEY")
-    headers = {
-        "X-Authorization": api_key,
+
+def easybroker_headers():
+    return {
+        "X-Authorization": env("EASYBROKER_API_KEY"),
         "Content-Type": "application/json",
         "accept": "application/json",
     }
 
+
+def send_to_easybroker(payload, existing_public_id):
+    if existing_public_id:
+        method = "PUT"
+        url = f"{EASYBROKER_BASE_URL}/properties/{existing_public_id}"
+    else:
+        method = "POST"
+        url = f"{EASYBROKER_BASE_URL}/properties"
+
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = requests.post(
-                f"{EASYBROKER_BASE_URL}/properties",
-                json=payload,
-                headers=headers,
-                timeout=20,
-            )
+            response = requests.request(method, url, json=payload, headers=easybroker_headers(), timeout=20)
         except requests.RequestException as exc:
             last_error = str(exc)
             log.warning("Intento %s/%s: error de red (%s).", attempt, MAX_RETRIES, exc)
             time.sleep(RETRY_BACKOFF_SECONDS * attempt)
             continue
+
         if response.status_code in (200, 201):
-            return True, response.json(), None
+            try:
+                return True, response.json(), None
+            except ValueError:
+                return True, {}, None
 
         if 500 <= response.status_code < 600:
             last_error = f"HTTP {response.status_code}: {response.text[:500]}"
@@ -246,51 +374,79 @@ def send_to_easybroker(payload):
     return False, None, last_error or "Se agotaron los reintentos."
 
 
-def update_odoo_record(db, uid, api_key, models, record_id, values):
-    odoo_url = env("ODOO_URL").rstrip("/")
-    models.execute_kw(db, uid, api_key, ODOO_MODEL, "write", [[record_id], values])
+def update_odoo_reference(db, uid, api_key, models, record_id, public_id):
+    models.execute_kw(db, uid, api_key, ODOO_MODEL, "write", [[record_id], {FIELD_REFERENCE: public_id}])
+
 
 def main():
     log.info("Conectando a Odoo...")
-    db, uid, api_key, models = connect_odoo()
+    odoo_url, db, uid, api_key, models = connect_odoo()
 
-    log.info("Buscando viviendas listas para publicar...")
-    records, _ = fetch_pending_properties(db, uid, api_key, models)
-    log.info("Encontradas %s vivienda(s) pendientes.", len(records))
+    log.info("Buscando productos publicados en Odoo...")
+    records = fetch_ready_products(db, uid, api_key, models)
+    log.info("Encontrados %s producto(s) publicado(s).", len(records))
 
-    ok_count = 0
-    error_count = 0
+    created, updated, skipped, errors = 0, 0, 0, 0
+    summary_lines = []
 
     for record in records:
         record_id = record["id"]
-        title = record.get(FIELD_TITLE) or f"registro {record_id}"
-        log.info("Procesando: %s", title)
+        reference = (record.get(FIELD_REFERENCE) or "").strip()
+        title = record.get(FIELD_WEB_TITLE) or record.get(FIELD_NAME) or f"producto {record_id}"
 
-        payload = build_easybroker_payload(record)
-        success, response_body, error = send_to_easybroker(payload)
+        if not map_property_type(record.get(FIELD_PROPERTY_TYPE)):
+            log.warning(
+                "  SALTADO %s: tipo de inmueble '%s' no tiene mapeo confiable a EasyBroker.",
+                title, record.get(FIELD_PROPERTY_TYPE),
+            )
+            summary_lines.append(f"- SALTADO: {title} (tipo de inmueble sin mapeo: {record.get(FIELD_PROPERTY_TYPE)!r})")
+            skipped += 1
+            continue
+        if not map_operation_type(record.get(FIELD_OPERATION_TYPE)):
+            log.warning(
+                "  SALTADO %s: tipo de operación '%s' no tiene mapeo confiable a EasyBroker.",
+                title, record.get(FIELD_OPERATION_TYPE),
+            )
+            summary_lines.append(f"- SALTADO: {title} (tipo de operación sin mapeo: {record.get(FIELD_OPERATION_TYPE)!r})")
+            skipped += 1
+            continue
+
+        existing_public_id = reference if REFERENCE_PATTERN.match(reference) else None
+        payload = build_easybroker_payload(record, odoo_url)
+
+        log.info("Procesando: %s (%s)", title, "actualizar " + existing_public_id if existing_public_id else "crear nuevo")
+        success, response_body, error = send_to_easybroker(payload, existing_public_id)
 
         if success:
-            public_id = (response_body or {}).get("public_id", "")
-            update_odoo_record(db, uid, api_key, models, record_id, {
-                FIELD_SYNC_STATUS: "enviado",
-                FIELD_EASYBROKER_ID: public_id,
-                FIELD_SYNC_ERROR: False,
-            })
-            log.info("OK: %s -> EasyBroker %s", title, public_id)
-            ok_count += 1
+            if existing_public_id:
+                log.info("  OK: actualizado en EasyBroker (%s).", existing_public_id)
+                summary_lines.append(f"- Actualizado: {title} ({existing_public_id})")
+                updated += 1
+            else:
+                public_id = (response_body or {}).get("public_id", "")
+                if public_id:
+                    update_odoo_reference(db, uid, api_key, models, record_id, public_id)
+                log.info("  OK: creado en EasyBroker (%s).", public_id or "sin public_id en la respuesta")
+                summary_lines.append(f"- Creado: {title} ({public_id or 'sin public_id'})")
+                created += 1
         else:
-            update_odoo_record(db, uid, api_key, models, record_id, {
-                FIELD_SYNC_STATUS: "error",
-                FIELD_SYNC_ERROR: error,
-            })
-            log.error("ERROR: %s -> %s", title, error)
-            error_count += 1
+            log.error("  ERROR: %s -> %s", title, error)
+            summary_lines.append(f"- ERROR: {title} -> {error}")
+            errors += 1
 
-    log.info("Listo. %s enviada(s) con éxito, %s con error.", ok_count, error_count)
+    log.info(
+        "Listo. %s creada(s), %s actualizada(s), %s saltada(s), %s con error.",
+        created, updated, skipped, errors,
+    )
 
-    if error_count and not ok_count:
-        # Si TODO falló, marca el job de GitHub Actions en rojo para que se
-        # note en la pestaña Actions (útil si luego se agregan notificaciones).
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as fh:
+            fh.write("## Sincronización Odoo -> EasyBroker\n\n")
+            fh.write(f"{created} creada(s), {updated} actualizada(s), {skipped} saltada(s), {errors} con error.\n\n")
+            fh.writelines(line + "\n" for line in summary_lines)
+
+    if errors and not (created or updated):
         sys.exit(1)
 
 
