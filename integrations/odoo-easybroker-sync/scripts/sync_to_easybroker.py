@@ -276,6 +276,20 @@ def many2one_name(value):
     return None
 
 
+_COUNTRY_SUFFIX_PATTERN = re.compile(r"\s*\([A-Z]{2}\)\s*$")
+
+
+def clean_state_name(value):
+    """x_studio_estado es un many2one a res.country.state, y Odoo le agrega
+    " (MX)" al nombre para desambiguar cuando hay estados con el mismo
+    nombre en varios países (confirmado el 04/sep/2026 en la corrida #233,
+    donde "Jalisco (MX)" no encontró ningún match en /locations -- ese
+    sufijo no forma parte del nombre real del estado para EasyBroker)."""
+    if not value:
+        return value
+    return _COUNTRY_SUFFIX_PATTERN.sub("", value).strip()
+
+
 def build_image_urls(odoo_url, image_ids):
     # NOTA: no verificado en vivo todavía -- confirma con la primera
     # propiedad de prueba que EasyBroker sí puede descargar estas URLs.
@@ -361,7 +375,7 @@ def build_easybroker_payload(record, odoo_url):
     title = record.get(FIELD_WEB_TITLE) or record.get(FIELD_NAME) or record.get(FIELD_REFERENCE) or ""
     description = strip_html(record.get(FIELD_LONG_DESCRIPTION)) or strip_html(record.get(FIELD_SHORT_DESCRIPTION))
 
-    state_name = many2one_name(record.get(FIELD_STATE))
+    state_name = clean_state_name(many2one_name(record.get(FIELD_STATE)))
     municipality = record.get(FIELD_MUNICIPALITY) or ""
     city = record.get(FIELD_CITY) or municipality
     neighborhood = record.get(FIELD_NEIGHBORHOOD) or ""
