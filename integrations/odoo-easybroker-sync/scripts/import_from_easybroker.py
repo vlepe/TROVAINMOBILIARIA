@@ -30,9 +30,15 @@ scripts/list_odoo_product_fields.py contra la Odoo real de Trova, el
     resolve_state_id() lo busca por nombre contra los estados de México; si
     no lo encuentra, deja ese campo sin asignar (no truena el registro) y
     avisa con un warning en el log.
-  - No existe en Odoo un campo de "dirección exacta" — se usa el más
-    parecido, x_studio_referencias_de_ubicacion (texto libre), como mejor
-    aproximación disponible.
+  - x_studio_direccion_exacta SÍ existe (se había pasado por alto en el
+    primer barrido de list_odoo_product_fields.py porque su etiqueta
+    "Dirección exacta" lleva acento y las palabras clave de búsqueda no lo
+    tenían; se confirmó corriendo list_odoo_product_fields.py --all el
+    04/sep/2026). Es el campo correcto para la dirección y reemplaza al
+    x_studio_referencias_de_ubicacion que se usaba antes como aproximación.
+    Por privacidad, aquí NO se activa x_studio_mostrar_direccion_exacta_en_web
+    (el switch "Mostrar dirección exacta en web") -- se deja como esté en
+    Odoo; actívalo a mano si quieres que la dirección exacta se vea pública.
 
 Las imágenes se descargan desde las URLs que da EasyBroker y se suben como
 adjuntos del producto (product_template_image_ids, el campo estándar de
@@ -77,7 +83,7 @@ FIELD_STATE = "x_studio_estado"                           # many2one -> res.coun
 FIELD_MUNICIPALITY = "x_studio_municipio_o_alcaldia"
 FIELD_NEIGHBORHOOD = "x_studio_colonia"
 FIELD_ZIP = "x_studio_codigo_postal"
-FIELD_EXACT_ADDRESS = "x_studio_referencias_de_ubicacion"  # no hay campo de "dirección exacta"; este es el más cercano
+FIELD_EXACT_ADDRESS = "x_studio_direccion_exacta"  # confirmado 04/sep/2026: campo real de "Dirección exacta"
 FIELD_LAT = "x_studio_latitud"
 FIELD_LNG = "x_studio_longitud"
 FIELD_LOT_SIZE = "x_studio_superficie_de_terreno_m2"
