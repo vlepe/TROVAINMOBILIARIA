@@ -1,0 +1,42 @@
+name: Importar propiedades de EasyBroker a Odoo
+
+# Solo manual (workflow_dispatch) — este es un backfill puntual, no algo
+# que deba correr solo. Es idempotente (busca por Referencia antes de
+# crear), pero aun así se lanza a propósito, no en automático.
+on:
+  workflow_dispatch:
+    inputs:
+      property_ids:
+        description: >-
+          IDs de EasyBroker a importar, separados por coma (ej.
+          EB-WW0370,EB-WW0281). Déjalo vacío para intentar traer TODAS las
+          publicadas (revisa el TODO de fetch_all_published_ids en el
+          script antes de usar esta opción sin límite).
+        required: false
+        default: "EB-WW0370,EB-WW0281,EB-WW0246,EB-UO5360,EB-WJ9787"
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r integrations/odoo-easybroker-sync/scripts/requirements.txt
+
+      - name: Ejecutar la importación
+        env:
+          ODOO_URL: ${{ vars.ODOO_URL }}
+          ODOO_DB: ${{ vars.ODOO_DB }}
+          ODOO_USERNAME: ${{ vars.ODOO_USERNAME }}
+          ODOO_API_KEY: ${{ secrets.API_ODOO_TROVA }}
+          EASYBROKER_API_KEY: ${{ secrets.API_EASY_BROKER }}
+          EASYBROKER_PROPERTY_IDS: ${{ github.event.inputs.property_ids }}
+        run: python integrations/odoo-easybroker-sync/scripts/import_from_easybroker.py
