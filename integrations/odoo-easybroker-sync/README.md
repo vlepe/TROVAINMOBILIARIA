@@ -28,7 +28,7 @@ Ver el documento de diseño completo ("Diseno_Odoo_EasyBroker_Portales.docx") pa
     | Variable | Valor |
     |---|---|
     | `ODOO_URL` | URL base de tu instancia, **sin** `/odoo` al final: `https://trovainmobiliaria.odoo.com` (el XML-RPC vive en la raíz del dominio, no bajo `/odoo`, que es solo la ruta del cliente web) |
-    | `ODOO_DB` | Nombre de la base de datos de Odoo (normalmente el mismo subdominio, ej. `trovainmobiliaria`; confírmalo en Ajustes > Técnico > Base de datos, o pregúntale a tu partner de Odoo si no estás seguro) |
+    | `ODOO_DB` | Nombre de la base de datos de Odoo (normalmente el mismo subdominio, ej. `trovainmobiliaria`; confírmalo en Ajustes > Técnico > Base de datos, o pregúntale a tu partner de Odoo si no estás seguro) |
     | `ODOO_USERNAME` | Usuario (correo) que hará las lecturas/escrituras — idealmente un usuario técnico dedicado, no una cuenta personal |
 
     **Secretos** (valores sensibles, GitHub los oculta):
@@ -54,3 +54,26 @@ Antes de dejarlo en automático de verdad: prueba primero con una vivienda de ej
 ## Ajustar la frecuencia
 
 La línea `cron: "*/10 * * * *"` en `.github/workflows/sync-viviendas.yml` controla cada cuánto corre. GitHub Actions no garantiza el minuto exacto en horarios de mucha carga, así que 10 minutos es un margen razonable para algo que no necesita ser instantáneo.
+
+**Nota:** el `on:` de este workflow está comentado (`#VIC`) ahorita mismo, así que no tiene ningún disparador activo — ni cron ni manual. Si quieres volver a activarlo, quita el prefijo `#VIC` de esas líneas.
+
+## Importar de EasyBroker hacia Odoo (sentido inverso)
+
+Además del flujo Odoo → EasyBroker de arriba, este paquete incluye el camino inverso para el caso detectado el 19 de agosto: propiedades que ya están publicadas en EasyBroker/Inmuebles24 pero que todavía no existen como producto en `trovainmobiliaria.com`.
+
+- `scripts/list_odoo_product_fields.py` — utilidad de una sola vez para sacar los nombres técnicos reales de los campos de la pestaña "Información inmobiliaria" en Odoo (Recámaras, Tipo de operación, Colonia, etc.). Ódoo tiene un módulo de bienes raíces instalado que les puso nombres internos que no se adivinan desde la pantalla — hay que confirmarlos antes de usar el script de importación en serio.
+
+  ```bash
+  ODOO_URL=https://trovainmobiliaria.odoo.com ODOO_DB=... ODOO_USERNAME=... ODOO_API_KEY=... \
+    python scripts/list_odoo_product_fields.py
+  ```
+
+- `scripts/import_from_easybroker.py` — trae una propiedad de EasyBroker por su `public_id` (ej. `EB-WW0370`) y crea (o actualiza, si ya existe por Referencia) el producto correspondiente en Odoo, incluyendo sus fotos. Es idempotente: no duplica si ya existe.
+- `.github/workflows/import-easybroker.yml` — workflow **manual** (no corre solo) con las 5 propiedades detectadas como faltantes precargadas como valor por defecto: `EB-WW0370, EB-WW0281, EB-WW0246, EB-UO5360, EB-WJ9787`. Se lanza desde la pestaña Actions → "Importar propiedades de EasyBroker a Odoo" → "Run workflow".
+
+### Antes de correr la importación de verdad
+
+1. Corre `list_odoo_product_fields.py` y anota los nombres técnicos reales.
+2. Reemplaza los `FIELD_*` marcados `# TODO` al inicio de `import_from_easybroker.py` (`FIELD_PROPERTY_TYPE`, `FIELD_OPERATION_TYPE`, `FIELD_BEDROOMS`, etc.) con esos nombres reales — vienen con valores de ejemplo tipo `x_recamaras` que casi seguro NO son los correctos.
+3. Corre el workflow manual una vez con una sola propiedad primero (edita el input `property_ids` a un solo código) y revisa en Odoo que el producto se haya creado bien — nombre, precio, ubicación, características y fotos — antes de correrlo con las 5 completas.
+4. El campo `is_published` queda en `True` para que aparezca de inmediato en la tienda; si prefieres revisarlas antes de publicarlas, cambia esa línea en `build_odoo_values()` a `False` y actívalas manualmente en Odoo cuando estén listas.
