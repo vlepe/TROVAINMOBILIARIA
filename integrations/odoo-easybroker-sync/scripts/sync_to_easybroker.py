@@ -32,13 +32,19 @@ versión anterior de este script (ya corregidas):
   - "location" en escritura NO acepta state/province/municipality/city/
     neighborhood/colony (esas llaves son del lado de LECTURA, con otro
     formato). Solo acepta: name, street, exterior_number, interior_number,
-    cross_street, postal_code, latitude, longitude. "name" debe ser el
-    string jerárquico "Colonia, Ciudad, Estado" (mismo formato que el
-    "full_name" del endpoint /locations).
+    cross_street, postal_code, latitude, longitude.
   - La lista de fotos se manda en la llave "images", no "property_images"
     (esa es la llave del lado de lectura).
   - Cada operación en "operations" necesita también "active": true
     (booleano requerido por el esquema de EasyBroker).
+  - "location.name" NO se puede armar a mano (aunque tenga el formato
+    correcto "Colonia, Ciudad, Estado") -- EasyBroker lo valida contra su
+    propio catálogo de ubicaciones y lo rechaza con HTTP 422 si no
+    coincide con un registro real (esto se descubrió DESPUÉS de arreglar
+    lo de arriba, en la corrida #232). Por eso ahora se busca primero en
+    GET /locations (ver resolve_location_name) y se usa el "full_name"
+    que esa búsqueda regresa. Si no encuentra nada parecido, la propiedad
+    se SALTA (no se manda una ubicación inventada).
 
 Diseño para no publicar por accidente / no filtrar información sensible:
   - Solo se consideran productos con is_published = True (el switch
@@ -276,7 +282,79 @@ def build_image_urls(odoo_url, image_ids):
     return [f"{odoo_url}/web/image/product.image/{image_id}/image_1920" for image_id in image_ids]
 
 
+# Cache en memoria (dura solo la corrida) para no repetir la misma búsqueda
+# de ubicación varias veces si varias propiedades comparten colonia/ciudad.
+_LOCATION_CACHE = {}
+
+
+def resolve_location_name(neighborhood, city, state):
+    """Busca en el catálogo de ubicaciones de EasyBroker (GET /locations) el
+    nombre EXACTO que hay que mandar en location.name.
+
+    Descubierto el 04/sep/2026: a diferencia de lo que se pensaba al leer la
+    documentación (que solo decía "debe coincidir con una ubicación
+    encontrada a través del endpoint locations"), EasyBroker valida esto de
+    verdad -- mandar un texto armado a mano (aunque tenga el formato
+    correcto "Colonia, Ciudad, Estado") lo rechaza con HTTP 422 si no
+    coincide con un registro real de su catálogo. Por eso hay que preguntarle
+    primero a /locations y usar el "full_name" que regresa, en vez de
+    construir el string nosotros mismos.
+
+    Intenta primero con la combinación más específica (colonia + ciudad +
+    estado) y se va simplificando si no hay coincidencia, para maximizar la
+    probabilidad de encontrar algo válido. Regresa None si ninguna búsqueda
+    encuentra nada -- en ese caso el llamador debe SALTAR la propiedad en vez
+    de mandar una ubicación inventada.
+    """
+    cache_key = (neighborhood or "", city or "", state or "")
+    if cache_key in _LOCATION_CACHE:
+        return _LOCATION_CACHE[cache_key]
+
+    candidates = []
+    if neighborhood and city and state:
+        candidates.append(f"{neighborhood}, {city}, {state}")
+    if city and state:
+        candidates.append(f"{city}, {state}")
+    if neighborhood:
+        candidates.append(neighborhood)
+    if city:
+        candidates.append(city)
+    if state:
+        candidates.append(state)
+
+    result = None
+    for query in candidates:
+        try:
+            response = requests.get(
+                f"{EASYBROKER_BASE_URL}/locations",
+                params={"query": query},
+                headers=easybroker_headers(),
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            log.warning("  No se pudo consultar /locations para %r: %s", query, exc)
+            continue
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except ValueError:
+                continue
+            full_name = data.get("full_name") or data.get("name")
+            if full_name:
+                result = full_name
+                break
+        # 404 (no encontrado) u otro código: se prueba con el siguiente
+        # candidato más simple, sin tratarlo como error.
+
+    _LOCATION_CACHE[cache_key] = result
+    return result
+
+
 def build_easybroker_payload(record, odoo_url):
+    """Regresa (payload, error). Si error no es None, payload es None y no
+    hay que mandar nada a EasyBroker para esta propiedad (ver
+    resolve_location_name)."""
     property_type = map_property_type(record.get(FIELD_PROPERTY_TYPE))
     operation_type = map_operation_type(record.get(FIELD_OPERATION_TYPE))
 
@@ -293,15 +371,19 @@ def build_easybroker_payload(record, odoo_url):
     # state/province/municipality/city/neighborhood/colony NO existen ahí
     # (esas son del lado de lectura, con otro formato) y mandarlas causaba
     # "Unpermitted parameters" (HTTP 422) en todas las propiedades.
-    # "name" debe ser el string jerárquico "Colonia, Ciudad, Estado" --
-    # el mismo formato que regresa el endpoint /locations en su campo
-    # "full_name" (ver dev.easybroker.com/reference/get_locations) -- por
-    # eso se construye a partir de colonia/ciudad/estado en vez de usar
-    # x_studio_ubicacion_publica directo (ese texto libre puede no calzar
-    # exactamente con ese formato).
-    location_name = ", ".join(filter(None, [neighborhood, city, state_name])) or (
-        record.get(FIELD_PUBLIC_LOCATION) or ""
-    )
+    # "name" tiene que ser EXACTAMENTE un nombre que exista en el catálogo
+    # de ubicaciones de EasyBroker (ver resolve_location_name) -- armar el
+    # string nosotros mismos (aunque tenga el formato correcto) no basta,
+    # EasyBroker lo rechaza si no coincide con un registro real.
+    location_name = resolve_location_name(neighborhood, city, state_name)
+    if not location_name:
+        return None, (
+            "no se encontró en el catálogo de ubicaciones de EasyBroker "
+            f"nada parecido a {', '.join(filter(None, [neighborhood, city, state_name])) or '(sin colonia/ciudad/estado en Odoo)'} "
+            "-- revisa/corrige la colonia, ciudad o estado de esta propiedad en Odoo, "
+            "o consulta GET /locations en EasyBroker para ver el nombre exacto que espera."
+        )
+
     location = {
         "name": location_name,
         "postal_code": record.get(FIELD_ZIP) or "",
@@ -348,7 +430,7 @@ def build_easybroker_payload(record, odoo_url):
         # (no "property_images" -- ese es el nombre del lado de lectura).
         payload["images"] = [{"url": u} for u in urls]
 
-    return payload
+    return payload, None
 
 
 def easybroker_headers():
@@ -442,7 +524,13 @@ def main():
             continue
 
         existing_public_id = reference if REFERENCE_PATTERN.match(reference) else None
-        payload = build_easybroker_payload(record, odoo_url)
+        payload, payload_error = build_easybroker_payload(record, odoo_url)
+
+        if payload_error:
+            log.warning("  SALTADO %s: %s", title, payload_error)
+            summary_lines.append(f"- SALTADO: {title} ({payload_error})")
+            skipped += 1
+            continue
 
         log.info("Procesando: %s (%s)", title, "actualizar " + existing_public_id if existing_public_id else "crear nuevo")
         success, response_body, error = send_to_easybroker(payload, existing_public_id)
