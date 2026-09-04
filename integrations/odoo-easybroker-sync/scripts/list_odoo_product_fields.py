@@ -37,7 +37,8 @@ KEYWORDS = [
     "latitud", "longitud", "clave", "inmueble", "operacion", "oportunidad",
     "comercial", "juridic", "publicad", "amenidad", "desarrollo",
     "propiedad", "inmobiliari", "referencia", "default_code", "list_price",
-    "is_published", "website_description", "descripcion",
+    "is_published", "website_description", "descripcion", "direccion",
+    "ubicacion", "google", "nivel", "piso", "antigued", "privativa",
 ]
 
 
