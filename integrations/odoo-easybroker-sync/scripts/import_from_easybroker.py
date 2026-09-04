@@ -18,19 +18,25 @@ Es idempotente: antes de crear un producto busca en Odoo un producto cuya
 Referencia interna (default_code) sea igual al public_id de EasyBroker
 (ej. "EB-WW0370"); si ya existe, lo actualiza en vez de duplicarlo.
 
-ANTES DE USARLO EN SERIO:
-  - Los nombres de campo técnicos de la pestaña "Información inmobiliaria"
-    de Odoo (Recámaras, Baños, Tipo de operación, Colonia, etc.) están
-    marcados como TODO más abajo con un valor de ejemplo — Odoo instaló un
-    módulo de bienes raíces que les puso nombres internos propios que no
-    se adivinan por la etiqueta que ves en pantalla. Corre primero
-    scripts/list_odoo_product_fields.py para sacar los nombres reales y
-    reemplaza los TODO.
-  - Las imágenes se descargan desde las URLs que da EasyBroker y se suben
-    como adjuntos del producto (product_template_image_ids, el campo
-    estándar de galería de imágenes del eCommerce de Odoo). Si tu módulo
-    de bienes raíces tiene su propio campo de fotos en vez de usar la
-    galería estándar, ajusta upload_images() más abajo.
+Los nombres de campo técnicos ya están confirmados (se sacaron corriendo
+scripts/list_odoo_product_fields.py contra la Odoo real de Trova, el
+19/ago/2026). Dos casos especiales a tener en cuenta:
+  - x_studio_tipo_de_inmueble y x_studio_tipo_de_operacion son campos tipo
+    "selection" en Odoo: solo aceptan uno de sus valores exactos (ver
+    PROPERTY_TYPE_MAP / map_operation_type más abajo), no cualquier texto.
+    Si EasyBroker manda un tipo que no se reconoce, se usa "Otro" para no
+    tronar la importación — pero hay que revisarlo a mano después.
+  - x_studio_estado es una referencia a res.country.state (no texto libre).
+    resolve_state_id() lo busca por nombre contra los estados de México; si
+    no lo encuentra, deja ese campo sin asignar (no truena el registro) y
+    avisa con un warning en el log.
+  - No existe en Odoo un campo de "dirección exacta" — se usa el más
+    parecido, x_studio_referencias_de_ubicacion (texto libre), como mejor
+    aproximación disponible.
+
+Las imágenes se descargan desde las URLs que da EasyBroker y se suben como
+adjuntos del producto (product_template_image_ids, el campo estándar de
+galería de imágenes del eCommerce de Odoo).
 """
 
 import base64
@@ -63,31 +69,85 @@ FIELD_PRICE = "list_price"          # Precio de venta
 FIELD_PUBLISHED = "is_published"    # Switch "Publicado" en la pestaña Comercio electrónico
 FIELD_SALE_OK = "sale_ok"           # Casilla "Ventas"
 
-# TODO: reemplazar estos nombres con los reales que regrese
-# list_odoo_product_fields.py — estos son marcadores de ejemplo, casi
-# seguro NO son los nombres técnicos correctos.
-FIELD_PROPERTY_KEY = "x_clave_de_propiedad"
-FIELD_PROPERTY_TYPE = "x_tipo_de_inmueble"
-FIELD_OPERATION_TYPE = "x_tipo_de_operacion"
-FIELD_STATE = "x_estado"
-FIELD_MUNICIPALITY = "x_municipio_o_alcaldia"
-FIELD_NEIGHBORHOOD = "x_colonia"
-FIELD_ZIP = "x_codigo_postal"
-FIELD_EXACT_ADDRESS = "x_direccion_exacta"
-FIELD_LAT = "x_latitud"
-FIELD_LNG = "x_longitud"
-FIELD_LOT_SIZE = "x_superficie_de_terreno"
-FIELD_CONSTRUCTION_SIZE = "x_superficie_de_construccion"
-FIELD_BEDROOMS = "x_recamaras"
-FIELD_BATHROOMS_FULL = "x_banos_completos"
-FIELD_BATHROOMS_HALF = "x_medios_banos"
-FIELD_PARKING = "x_estacionamientos"
-FIELD_LONG_DESCRIPTION = "x_descripcion_completa"
+# Nombres técnicos reales, confirmados con list_odoo_product_fields.py.
+FIELD_PROPERTY_KEY = "x_studio_clave_de_propiedad"
+FIELD_PROPERTY_TYPE = "x_studio_tipo_de_inmueble"        # selection, ver PROPERTY_TYPE_MAP
+FIELD_OPERATION_TYPE = "x_studio_tipo_de_operacion"       # selection, ver map_operation_type()
+FIELD_STATE = "x_studio_estado"                           # many2one -> res.country.state
+FIELD_MUNICIPALITY = "x_studio_municipio_o_alcaldia"
+FIELD_NEIGHBORHOOD = "x_studio_colonia"
+FIELD_ZIP = "x_studio_codigo_postal"
+FIELD_EXACT_ADDRESS = "x_studio_referencias_de_ubicacion"  # no hay campo de "dirección exacta"; este es el más cercano
+FIELD_LAT = "x_studio_latitud"
+FIELD_LNG = "x_studio_longitud"
+FIELD_LOT_SIZE = "x_studio_superficie_de_terreno_m2"
+FIELD_CONSTRUCTION_SIZE = "x_studio_superficie_de_construccion_m2"
+FIELD_BEDROOMS = "x_studio_recamaras"
+FIELD_BATHROOMS_FULL = "x_studio_banos_completos"
+FIELD_BATHROOMS_HALF = "x_studio_medios_banos"
+FIELD_PARKING = "x_studio_estacionamientos"
+FIELD_LONG_DESCRIPTION = "x_studio_descripcion_completa"
 
 # Campo estándar de Odoo/eCommerce para la galería de fotos del producto.
 FIELD_IMAGE_IDS = "product_template_image_ids"
 
 EASYBROKER_BASE_URL = "https://api.easybroker.com/v1"
+
+# Valores exactos que acepta x_studio_tipo_de_inmueble en Odoo (campo tipo
+# "selection" -- cualquier otro valor hace tronar el create/write). Mapeamos
+# por palabra clave porque el catálogo de EasyBroker es más granular que el
+# de Odoo (ej. EasyBroker puede mandar "Casa en condominio", "Rancho",
+# "Nave industrial", etc.) -- lo que no se reconoce cae en "Otro".
+ODOO_PROPERTY_TYPES = {
+    "Casa", "Departamento", "Terreno", "Local comercial", "Bodega",
+    "Oficina", "Desarrollo", "Otro",
+}
+
+PROPERTY_TYPE_KEYWORDS = [
+    ("depa", "Departamento"),
+    ("terreno", "Terreno"),
+    ("local", "Local comercial"),
+    ("bodega", "Bodega"),
+    ("nave industrial", "Bodega"),
+    ("oficina", "Oficina"),
+    ("desarrollo", "Desarrollo"),
+    ("condominio", "Casa"),
+    ("villa", "Casa"),
+    ("casa", "Casa"),
+]
+
+
+def map_property_type(easybroker_name):
+    """Traduce el tipo de inmueble de EasyBroker al valor 'selection' de Odoo.
+
+    Si no se reconoce, regresa 'Otro' en vez de fallar -- pero conviene
+    revisar a mano esos casos después de importar.
+    """
+    if not easybroker_name:
+        return "Otro"
+    haystack = str(easybroker_name).strip().lower()
+    for keyword, odoo_value in PROPERTY_TYPE_KEYWORDS:
+        if keyword in haystack:
+            return odoo_value
+    return "Otro"
+
+
+def map_operation_type(easybroker_type):
+    """Traduce el tipo de operación de EasyBroker al valor 'selection' de Odoo.
+
+    A diferencia de map_property_type(), aquí NO adivinamos con un valor por
+    default -- si no se reconoce el tipo, regresamos None y el campo se deja
+    sin asignar (mejor eso que escribir "Venta" cuando en realidad era
+    "Renta", o viceversa).
+    """
+    if not easybroker_type:
+        return None
+    key = str(easybroker_type).strip().lower()
+    if key in ("sale", "venta", "sell", "for_sale"):
+        return "Venta"
+    if key in ("rental", "renta", "rent", "for_rent"):
+        return "Renta"
+    return None
 
 
 def env(name, required=True, default=None):
@@ -168,10 +228,51 @@ def find_existing_product(db, uid, api_key, models, public_id):
     return ids[0] if ids else None
 
 
-def build_odoo_values(prop):
+_state_id_cache = {}
+
+
+def resolve_state_id(db, uid, api_key, models, state_name):
+    """Busca el id de res.country.state en Odoo para un nombre de estado
+    mexicano (ej. "Michoacán"). Regresa None si no lo encuentra -- en ese
+    caso el campo x_studio_estado se deja sin asignar en vez de tronar todo
+    el registro.
+    """
+    if not state_name:
+        return None
+    key = state_name.strip().lower()
+    if key in _state_id_cache:
+        return _state_id_cache[key]
+
+    domain_exact = [("name", "=ilike", state_name), ("country_id.code", "=", "MX")]
+    ids = models.execute_kw(db, uid, api_key, "res.country.state", "search", [domain_exact], {"limit": 1})
+    if not ids:
+        domain_fuzzy = [("name", "ilike", state_name), ("country_id.code", "=", "MX")]
+        ids = models.execute_kw(db, uid, api_key, "res.country.state", "search", [domain_fuzzy], {"limit": 1})
+
+    result = ids[0] if ids else None
+    _state_id_cache[key] = result
+    return result
+
+
+def build_odoo_values(prop, db, uid, api_key, models):
     location = prop.get("location") or {}
     operations = prop.get("operations") or []
     price = operations[0].get("amount") if operations else 0
+
+    property_type_raw = (prop.get("property_type") or {}).get("name") \
+        if isinstance(prop.get("property_type"), dict) else prop.get("property_type")
+    operation_type_raw = operations[0].get("type") if operations else None
+    mapped_operation_type = map_operation_type(operation_type_raw)
+    if operation_type_raw and not mapped_operation_type:
+        log.warning(
+            "  Tipo de operación de EasyBroker '%s' no se reconoce (se esperaba sale/rental); "
+            "x_studio_tipo_de_operacion se deja sin asignar.", operation_type_raw,
+        )
+
+    state_name = location.get("state") or location.get("province")
+    state_id = resolve_state_id(db, uid, api_key, models, state_name) if state_name else None
+    if state_name and not state_id:
+        log.warning("  No se encontró el estado '%s' en Odoo (res.country.state); se deja sin asignar.", state_name)
 
     values = {
         FIELD_NAME: prop.get("title") or prop.get("public_id"),
@@ -180,15 +281,16 @@ def build_odoo_values(prop):
         FIELD_PUBLISHED: True,
         FIELD_SALE_OK: True,
         FIELD_PROPERTY_KEY: prop.get("public_id"),
-        FIELD_PROPERTY_TYPE: (prop.get("property_type") or {}).get("name")
-        if isinstance(prop.get("property_type"), dict) else prop.get("property_type"),
-        FIELD_STATE: location.get("state") or location.get("province"),
+        FIELD_PROPERTY_TYPE: map_property_type(property_type_raw),
+        FIELD_STATE: state_id,
         FIELD_MUNICIPALITY: location.get("municipality") or location.get("city"),
         FIELD_NEIGHBORHOOD: location.get("neighborhood") or location.get("colony"),
         FIELD_ZIP: location.get("postal_code"),
         FIELD_EXACT_ADDRESS: location.get("street") or location.get("name"),
         FIELD_LONG_DESCRIPTION: prop.get("description") or "",
     }
+    if mapped_operation_type:
+        values[FIELD_OPERATION_TYPE] = mapped_operation_type
 
     if location.get("latitude") and location.get("longitude"):
         values[FIELD_LAT] = location["latitude"]
@@ -268,7 +370,7 @@ def main():
             errors += 1
             continue
 
-        values = build_odoo_values(prop)
+        values = build_odoo_values(prop, db, uid, api_key, models)
         existing_id = find_existing_product(db, uid, api_key, models, public_id)
 
         try:
