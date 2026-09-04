@@ -1,0 +1,49 @@
+name: Listar campos de producto en Odoo
+
+# Utilidad de una sola vez: corre list_odoo_product_fields.py y muestra el
+# resultado en el resumen de la corrida (pestaña Actions), para no tener
+# que instalar Python en tu computadora. Solo manual.
+on:
+  workflow_dispatch:
+    inputs:
+      all_fields:
+        description: >-
+          Marca esta casilla para ver los ~200 campos estándar de producto
+          sin filtrar. Déjala sin marcar para ver solo los que parecen
+          relacionados con bienes raíces (recámaras, colonia, m2, etc.).
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  list-fields:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r integrations/odoo-easybroker-sync/scripts/requirements.txt
+
+      - name: Listar campos y escribir el resumen
+        env:
+          ODOO_URL: ${{ vars.ODOO_URL }}
+          ODOO_DB: ${{ vars.ODOO_DB }}
+          ODOO_USERNAME: ${{ vars.ODOO_USERNAME }}
+          ODOO_API_KEY: ${{ secrets.API_ODOO_TROVA }}
+        run: |
+          echo '## Campos de producto en Odoo' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event.inputs.all_fields }}" = "true" ]; then
+            python integrations/odoo-easybroker-sync/scripts/list_odoo_product_fields.py --all | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            python integrations/odoo-easybroker-sync/scripts/list_odoo_product_fields.py | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
