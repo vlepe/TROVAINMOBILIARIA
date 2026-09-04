@@ -12,16 +12,33 @@ Cómo funciona:
   3. Traduce cada uno al formato que espera la API de EasyBroker.
   4. Si el producto no tiene todavía una Referencia (default_code) con
      formato EasyBroker (EB-...), lo CREA en EasyBroker (POST /properties)
-     y guarda el public_id que regresa de vuelta en default_code -- así la
+     y guarda el public_id que regresa de vuelta en default_code — así la
      siguiente corrida ya sabe que existe y lo actualiza en vez de
      duplicarlo. Si ya tiene una Referencia EB-..., lo ACTUALIZA
      (PUT /properties/{public_id}).
 
-Nombres de campo: confirmados el 19/ago/2026 y el 04/sep/2026 corriendo
-scripts/list_odoo_product_fields.py --all contra la Odoo real de Trova (ver
-integrations/odoo-easybroker-sync/README.md). El modelo real NO es
-"x_vivienda" (ese nunca se construyó) -- son campos x_studio_* agregados
+Nombres de campo (lado Odoo): confirmados el 19/ago/2026 y el 04/sep/2026
+corriendo scripts/list_odoo_product_fields.py --all contra la Odoo real de
+Trova (ver integrations/odoo-easybroker-sync/README.md). El modelo real NO
+es "x_vivienda" (ese nunca se construyó) — son campos x_studio_* agregados
 directo sobre product.template, el mismo modelo de producto de la tienda.
+
+Nombres de campo (lado EasyBroker, para ESCRITURA): confirmados el
+04/sep/2026 contra dev.easybroker.com/reference/post_properties, después de
+que la primera corrida real (#231, 04/sep/2026) fallara con
+"HTTP 422 Unpermitted parameters" en todas las propiedades que sí tenían
+tipo de inmueble y tipo de operación mapeados. Dos cosas estaban mal en la
+versión anterior de este script (ya corregidas):
+  - "location" en escritura NO acepta state/province/municipality/city/
+    neighborhood/colony (esas llaves son del lado de LECTURA, con otro
+    formato). Solo acepta: name, street, exterior_number, interior_number,
+    cross_street, postal_code, latitude, longitude. "name" debe ser el
+    string jerárquico "Colonia, Ciudad, Estado" (mismo formato que el
+    "full_name" del endpoint /locations).
+  - La lista de fotos se manda en la llave "images", no "property_images"
+    (esa es la llave del lado de lectura).
+  - Cada operación en "operations" necesita también "active": true
+    (booleano requerido por el esquema de EasyBroker).
 
 Diseño para no publicar por accidente / no filtrar información sensible:
   - Solo se consideran productos con is_published = True (el switch
@@ -37,7 +54,7 @@ Diseño para no publicar por accidente / no filtrar información sensible:
     estado, x_studio_ubicacion_publica).
   - Los campos de negocio interno (comisión, situación jurídica, datos del
     propietario, restricciones de visita, asesor responsable, etc.) NO se
-    mandan a EasyBroker a propósito -- son para uso interno del equipo, no
+    mandan a EasyBroker a propósito — son para uso interno del equipo, no
     para portales públicos.
 
 Lo que este script SÍ manda a EasyBroker (ver build_easybroker_payload):
@@ -270,23 +287,24 @@ def build_easybroker_payload(record, odoo_url):
     municipality = record.get(FIELD_MUNICIPALITY) or ""
     city = record.get(FIELD_CITY) or municipality
     neighborhood = record.get(FIELD_NEIGHBORHOOD) or ""
-    public_location = record.get(FIELD_PUBLIC_LOCATION) or ", ".join(
-        filter(None, [neighborhood, city, state_name])
-    )
 
+    # Confirmado el 04/sep/2026 contra dev.easybroker.com/reference/post_properties:
+    # "location" en escritura (POST/PUT) SOLO acepta estas llaves --
+    # state/province/municipality/city/neighborhood/colony NO existen ahí
+    # (esas son del lado de lectura, con otro formato) y mandarlas causaba
+    # "Unpermitted parameters" (HTTP 422) en todas las propiedades.
+    # "name" debe ser el string jerárquico "Colonia, Ciudad, Estado" --
+    # el mismo formato que regresa el endpoint /locations en su campo
+    # "full_name" (ver dev.easybroker.com/reference/get_locations) -- por
+    # eso se construye a partir de colonia/ciudad/estado en vez de usar
+    # x_studio_ubicacion_publica directo (ese texto libre puede no calzar
+    # exactamente con ese formato).
+    location_name = ", ".join(filter(None, [neighborhood, city, state_name])) or (
+        record.get(FIELD_PUBLIC_LOCATION) or ""
+    )
     location = {
-        "name": public_location,
+        "name": location_name,
         "postal_code": record.get(FIELD_ZIP) or "",
-        # Se manda con las dos llaves posibles (state/province,
-        # municipality/city, neighborhood/colony) porque no está 100%
-        # confirmado cuál usa la API de EasyBroker para escritura -- son
-        # llaves extra inofensivas si alguna no aplica.
-        "state": state_name or "",
-        "province": state_name or "",
-        "municipality": municipality,
-        "city": city,
-        "neighborhood": neighborhood,
-        "colony": neighborhood,
     }
     if record.get(FIELD_SHOW_EXACT_ADDRESS) and record.get(FIELD_EXACT_ADDRESS):
         location["street"] = record[FIELD_EXACT_ADDRESS]
@@ -302,6 +320,7 @@ def build_easybroker_payload(record, odoo_url):
         "operations": [
             {
                 "type": operation_type,
+                "active": True,
                 "amount": record.get(FIELD_PRICE) or 0,
                 "currency": DEFAULT_CURRENCY,
             }
@@ -325,7 +344,9 @@ def build_easybroker_payload(record, odoo_url):
     image_ids = record.get(FIELD_IMAGE_IDS) or []
     if image_ids:
         urls = build_image_urls(odoo_url, image_ids)
-        payload["property_images"] = [{"url": u} for u in urls]
+        # Confirmado el 04/sep/2026: la llave real en POST/PUT es "images"
+        # (no "property_images" -- ese es el nombre del lado de lectura).
+        payload["images"] = [{"url": u} for u in urls]
 
     return payload
 
@@ -394,20 +415,29 @@ def main():
         reference = (record.get(FIELD_REFERENCE) or "").strip()
         title = record.get(FIELD_WEB_TITLE) or record.get(FIELD_NAME) or f"producto {record_id}"
 
-        if not map_property_type(record.get(FIELD_PROPERTY_TYPE)):
+        # Odoo regresa `False` (no None ni "") en los campos de selección
+        # que están vacíos -- se muestra como "(vacío en Odoo)" en vez de
+        # "False" para que sea obvio que es una propiedad sin ese dato
+        # capturado todavía, no un error del script.
+        property_type_raw = record.get(FIELD_PROPERTY_TYPE)
+        operation_type_raw = record.get(FIELD_OPERATION_TYPE)
+
+        if not map_property_type(property_type_raw):
+            shown = property_type_raw if property_type_raw else "(vacío en Odoo)"
             log.warning(
                 "  SALTADO %s: tipo de inmueble '%s' no tiene mapeo confiable a EasyBroker.",
-                title, record.get(FIELD_PROPERTY_TYPE),
+                title, shown,
             )
-            summary_lines.append(f"- SALTADO: {title} (tipo de inmueble sin mapeo: {record.get(FIELD_PROPERTY_TYPE)!r})")
+            summary_lines.append(f"- SALTADO: {title} (tipo de inmueble sin mapeo: {shown})")
             skipped += 1
             continue
-        if not map_operation_type(record.get(FIELD_OPERATION_TYPE)):
+        if not map_operation_type(operation_type_raw):
+            shown = operation_type_raw if operation_type_raw else "(vacío en Odoo)"
             log.warning(
                 "  SALTADO %s: tipo de operación '%s' no tiene mapeo confiable a EasyBroker.",
-                title, record.get(FIELD_OPERATION_TYPE),
+                title, shown,
             )
-            summary_lines.append(f"- SALTADO: {title} (tipo de operación sin mapeo: {record.get(FIELD_OPERATION_TYPE)!r})")
+            summary_lines.append(f"- SALTADO: {title} (tipo de operación sin mapeo: {shown})")
             skipped += 1
             continue
 
