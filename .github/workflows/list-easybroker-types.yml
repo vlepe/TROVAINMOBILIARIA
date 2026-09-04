@@ -1,0 +1,35 @@
+name: Listar catálogo de EasyBroker (tipos de propiedad)
+
+# Utilidad de una sola vez: corre list_easybroker_property_types.py y
+# muestra el catálogo real de tipos de propiedad de la cuenta de EasyBroker
+# en el resumen de la corrida, para poder mapear correctamente los valores
+# de x_studio_tipo_de_inmueble (Odoo) hacia EasyBroker en
+# sync_to_easybroker.py. Solo manual.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  list-types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r integrations/odoo-easybroker-sync/scripts/requirements.txt
+
+      - name: Listar tipos y escribir el resumen
+        env:
+          EASYBROKER_API_KEY: ${{ secrets.API_EASY_BROKER }}
+        run: |
+          echo '## Catálogo de tipos de propiedad en EasyBroker' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python integrations/odoo-easybroker-sync/scripts/list_easybroker_property_types.py | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
