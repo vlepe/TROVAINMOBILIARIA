@@ -1,11 +1,17 @@
 name: Sincronizar viviendas Odoo -> EasyBroker
 
-# Se ejecuta cada 10 minutos y también se puede lanzar a mano desde la pestaña
+# Se ejecuta cada 6 horas y también se puede lanzar a mano desde la pestaña
 # "Actions" de GitHub (botón "Run workflow") para probar sin esperar al cron.
-#VIC on:
-#VIC  schedule:
-#VIC    - cron: "*/10 * * * *"
-#VIC  workflow_dispatch: {}
+#
+# Reactivado el 04/sep/2026 después de arreglar sync_to_easybroker.py para
+# que use el modelo y los campos reales de Odoo (antes apuntaba a un modelo
+# "x_vivienda" que nunca se construyó, por eso estuvo fallando y se había
+# comentado este disparador -- ver el historial de corridas de este
+# workflow para esas fallas).
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
 
 jobs:
   sync:
