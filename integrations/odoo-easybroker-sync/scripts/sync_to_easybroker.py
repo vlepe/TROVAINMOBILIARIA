@@ -121,7 +121,11 @@ log = logging.getLogger("sync")
 
 ODOO_MODEL = "product.template"
 
-# Campo estándar de Odoo/eCommerce: solo se sincronizan productos publicados.
+# Campos estándar de Odoo/eCommerce.
+# active=False significa archivado; is_published=False significa despublicado.
+# También se leen los registros archivados que ya tengan referencia EB-... para
+# poder darlos de baja en EasyBroker.
+FIELD_ACTIVE = "active"
 FIELD_READY = "is_published"
 
 # Referencia interna: si ya tiene forma "EB-XXXXXX" quiere decir que el
@@ -248,8 +252,15 @@ def strip_html(value):
     return text
 
 
-def fetch_ready_products(db, uid, api_key, models):
+def fetch_sync_candidates(db, uid, api_key, models):
+    """Trae viviendas publicadas y también cualquier registro que ya esté
+    enlazado a EasyBroker (EB-...), aunque esté despublicado o archivado.
+
+    active_test=False es indispensable: por defecto Odoo oculta los archivados
+    incluso si el dominio los incluye.
+    """
     fields = [
+        FIELD_ACTIVE, FIELD_READY,
         FIELD_REFERENCE, FIELD_NAME, FIELD_WEB_TITLE, FIELD_PRICE,
         FIELD_LONG_DESCRIPTION, FIELD_SHORT_DESCRIPTION,
         FIELD_PROPERTY_TYPE, FIELD_OPERATION_TYPE, FIELD_COMMERCIAL_STATUS,
@@ -260,11 +271,16 @@ def fetch_ready_products(db, uid, api_key, models):
         FIELD_BATHROOMS_FULL, FIELD_BATHROOMS_HALF, FIELD_PARKING,
         FIELD_IMAGE_IDS,
     ]
-    domain = [(FIELD_READY, "=", True)]
+    domain = [
+        "|",
+        (FIELD_READY, "=", True),
+        (FIELD_REFERENCE, "=like", "EB-%"),
+    ]
     return models.execute_kw(
         db, uid, api_key,
         ODOO_MODEL, "search_read",
         [domain, ["id"] + fields],
+        {"context": {"active_test": False}},
     )
 
 
@@ -365,6 +381,36 @@ def resolve_location_name(neighborhood, city, state):
     return result
 
 
+def validate_publication_fields(record):
+    """Valida los datos mínimos para que una vivienda publicada en Odoo pueda
+    crearse/actualizarse y quedar publicable en EasyBroker.
+
+    No se hacen required=True a nivel global porque product.template también
+    puede contener productos que no son viviendas. La validación en Odoo se
+    instala como regla condicional (solo cuando is_published=True).
+    """
+    missing = []
+
+    if not record.get(FIELD_PROPERTY_TYPE):
+        missing.append("Tipo de inmueble")
+    if not record.get(FIELD_OPERATION_TYPE):
+        missing.append("Tipo de operación")
+    if not record.get(FIELD_COMMERCIAL_STATUS):
+        missing.append("Estatus comercial")
+    if not record.get(FIELD_STATE):
+        missing.append("Estado")
+    if not (record.get(FIELD_CITY) or record.get(FIELD_MUNICIPALITY)):
+        missing.append("Ciudad o municipio/alcaldía")
+    if not record.get(FIELD_NEIGHBORHOOD):
+        missing.append("Colonia")
+    if not (strip_html(record.get(FIELD_LONG_DESCRIPTION)) or strip_html(record.get(FIELD_SHORT_DESCRIPTION))):
+        missing.append("Descripción completa o descripción corta")
+    if not record.get(FIELD_PRICE) or record.get(FIELD_PRICE) <= 0:
+        missing.append("Precio mayor a 0")
+
+    return missing
+
+
 def build_easybroker_payload(record, odoo_url):
     """Regresa (payload, error). Si error no es None, payload es None y no
     hay que mandar nada a EasyBroker para esta propiedad (ver
@@ -457,7 +503,9 @@ def easybroker_headers():
 
 def send_to_easybroker(payload, existing_public_id):
     if existing_public_id:
-        method = "PUT"
+        # La API actual de EasyBroker actualiza propiedades con PATCH. Esto
+        # permite mandar únicamente {"status": "not_published"} al dar de baja.
+        method = "PATCH"
         url = f"{EASYBROKER_BASE_URL}/properties/{existing_public_id}"
     else:
         method = "POST"
@@ -499,11 +547,11 @@ def main():
     log.info("Conectando a Odoo...")
     odoo_url, db, uid, api_key, models = connect_odoo()
 
-    log.info("Buscando productos publicados en Odoo...")
-    records = fetch_ready_products(db, uid, api_key, models)
-    log.info("Encontrados %s producto(s) publicado(s).", len(records))
+    log.info("Buscando viviendas publicadas o ya enlazadas a EasyBroker...")
+    records = fetch_sync_candidates(db, uid, api_key, models)
+    log.info("Encontrados %s candidato(s) para sincronización.", len(records))
 
-    created, updated, skipped, errors = 0, 0, 0, 0
+    created, updated, unpublished, skipped, errors = 0, 0, 0, 0, 0
     summary_lines = []
 
     for record in records:
@@ -517,6 +565,43 @@ def main():
         # capturado todavía, no un error del script.
         property_type_raw = record.get(FIELD_PROPERTY_TYPE)
         operation_type_raw = record.get(FIELD_OPERATION_TYPE)
+        existing_public_id = reference if REFERENCE_PATTERN.match(reference) else None
+        is_active = record.get(FIELD_ACTIVE, True) is not False
+        is_published = bool(record.get(FIELD_READY))
+
+        # Odoo es el maestro: si una vivienda ya enlazada a EasyBroker se
+        # despublica o archiva en Odoo, se despublica en EasyBroker. Nunca se
+        # borra físicamente para conservar historial y trazabilidad.
+        if existing_public_id and (not is_active or not is_published):
+            reason = "archivada" if not is_active else "despublicada"
+            log.info("Procesando baja: %s (%s en Odoo -> not_published en EasyBroker)", title, reason)
+            success, response_body, error = send_to_easybroker(
+                {"status": "not_published"},
+                existing_public_id,
+            )
+            if success:
+                log.info("  OK: despublicada en EasyBroker (%s).", existing_public_id)
+                summary_lines.append(f"- Despublicada: {title} ({existing_public_id}; {reason} en Odoo)")
+                unpublished += 1
+            else:
+                log.error("  ERROR al despublicar: %s -> %s", title, error)
+                summary_lines.append(f"- ERROR al despublicar: {title} ({existing_public_id}) -> {error}")
+                errors += 1
+            continue
+
+        # Un registro sin referencia EasyBroker que además esté archivado o
+        # despublicado no requiere ninguna acción externa.
+        if not is_active or not is_published:
+            skipped += 1
+            continue
+
+        missing_fields = validate_publication_fields(record)
+        if missing_fields:
+            shown = ", ".join(missing_fields)
+            log.warning("  SALTADO %s: faltan datos obligatorios: %s.", title, shown)
+            summary_lines.append(f"- SALTADO: {title} (faltan datos obligatorios: {shown})")
+            skipped += 1
+            continue
 
         if not map_property_type(property_type_raw):
             shown = property_type_raw if property_type_raw else "(vacío en Odoo)"
@@ -537,7 +622,6 @@ def main():
             skipped += 1
             continue
 
-        existing_public_id = reference if REFERENCE_PATTERN.match(reference) else None
         payload, payload_error = build_easybroker_payload(record, odoo_url)
 
         if payload_error:
@@ -567,15 +651,18 @@ def main():
             errors += 1
 
     log.info(
-        "Listo. %s creada(s), %s actualizada(s), %s saltada(s), %s con error.",
-        created, updated, skipped, errors,
+        "Listo. %s creada(s), %s actualizada(s), %s despublicada(s), %s saltada(s), %s con error.",
+        created, updated, unpublished, skipped, errors,
     )
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as fh:
             fh.write("## Sincronización Odoo -> EasyBroker\n\n")
-            fh.write(f"{created} creada(s), {updated} actualizada(s), {skipped} saltada(s), {errors} con error.\n\n")
+            fh.write(
+                f"{created} creada(s), {updated} actualizada(s), {unpublished} despublicada(s), "
+                f"{skipped} saltada(s), {errors} con error.\n\n"
+            )
             fh.writelines(line + "\n" for line in summary_lines)
 
     if errors and not (created or updated):
