@@ -1,0 +1,43 @@
+name: Verificar instancia Trova
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/verify-trova-target.yml"
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verificar dominio personalizado y regla
+        env:
+          ODOO_DB: ${{ vars.ODOO_DB }}
+          ODOO_USERNAME: ${{ vars.ODOO_USERNAME }}
+          ODOO_API_KEY: ${{ secrets.API_ODOO_TROVA }}
+        run: |
+          python - <<'PY'
+          import os, xmlrpc.client
+          url = "https://www.trovainmobiliaria.com"
+          db = os.environ["ODOO_DB"]
+          user = os.environ["ODOO_USERNAME"]
+          key = os.environ["ODOO_API_KEY"]
+          common = xmlrpc.client.ServerProxy(url + "/xmlrpc/2/common")
+          uid = common.authenticate(db, user, key, {})
+          if not uid:
+              raise SystemExit("ERROR: no autentica el dominio personalizado contra la base configurada")
+          models = xmlrpc.client.ServerProxy(url + "/xmlrpc/2/object")
+          ids = models.execute_kw(
+              db, uid, key, "base.automation", "search",
+              [[("name", "=", "Trova - Validar vivienda antes de publicar en EasyBroker")]],
+              {"limit": 5}
+          )
+          print("DOMINIO_OK", url)
+          print("DB_OK", db)
+          print("UID_OK", uid)
+          print("REGLA_IDS", ids)
+          if not ids:
+              raise SystemExit("ERROR: autentica, pero la regla no existe en esta base")
+          PY
