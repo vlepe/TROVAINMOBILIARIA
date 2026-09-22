@@ -1,0 +1,31 @@
+name: Configurar validación de viviendas en Odoo
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "integrations/odoo-easybroker-sync/scripts/configure_odoo_publication_validation.py"
+      - ".github/workflows/configure-odoo-validation.yml"
+  workflow_dispatch: {}
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar validación en Odoo
+        env:
+          ODOO_URL: ${{ vars.ODOO_URL }}
+          ODOO_DB: ${{ vars.ODOO_DB }}
+          ODOO_USERNAME: ${{ vars.ODOO_USERNAME }}
+          ODOO_API_KEY: ${{ secrets.API_ODOO_TROVA }}
+        run: python integrations/odoo-easybroker-sync/scripts/configure_odoo_publication_validation.py
