@@ -313,7 +313,7 @@ def build_image_urls(odoo_url, image_ids):
 
 
 # Cache en memoria (dura solo la corrida) para no repetir la misma búsqueda
-# de ubicación varias veces si varias propiedades comparten colonia/ciudad.
+de ubicación varias veces si varias propiedades comparten colonia/ciudad.
 _LOCATION_CACHE = {}
 
 
@@ -424,7 +424,18 @@ def build_easybroker_payload(record, odoo_url):
     state_name = clean_state_name(many2one_name(record.get(FIELD_STATE)))
     municipality = record.get(FIELD_MUNICIPALITY) or ""
     city = record.get(FIELD_CITY) or municipality
-    neighborhood = record.get(FIELD_NEIGHBORHOOD) or ""
+    neighborhood = (record.get(FIELD_NEIGHBORHOOD) or "").strip()
+
+    # EasyBroker valida explícitamente que el payload tenga una colonia
+    # (neighborhood) para propiedades publicables. Si no llega este dato la
+    # API responde con HTTP 422: {"errors":{"neighborhood":["es requerida para publicar."]}}
+    # y esa validación no se resuelve simplemente con la ubicación resoluta en
+    # `location.name`.
+    if not neighborhood:
+        return None, (
+            "falta la colonia/neighborhood requerida por EasyBroker para publicar "
+            f"la propiedad {title or '(sin título)'}; revisa x_studio_colonia en Odoo."
+        )
 
     # Confirmado el 04/sep/2026 contra dev.easybroker.com/reference/post_properties:
     # "location" en escritura (POST/PUT) SOLO acepta estas llaves --
@@ -468,7 +479,15 @@ def build_easybroker_payload(record, odoo_url):
             }
         ],
         "location": location,
+        "neighborhood": neighborhood,
     }
+
+    if city:
+        payload["city"] = city
+    if state_name:
+        payload["state"] = state_name
+    if record.get(FIELD_ZIP):
+        payload["postal_code"] = record.get(FIELD_ZIP)
 
     if record.get(FIELD_LOT_SIZE):
         payload["lot_size"] = record[FIELD_LOT_SIZE]
