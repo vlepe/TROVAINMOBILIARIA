@@ -12,11 +12,6 @@ on:
         required: false
         default: false
         type: boolean
-  # Disparador temporal y acotado para ejecutar el backfill confirmado.
-  # Se retirará junto con el archivo marcador al terminar.
-  push:
-    paths:
-      - ".github/backfill-property-metadata"
 
 jobs:
   sync:
@@ -35,7 +30,7 @@ jobs:
         run: pip install -r integrations/odoo-easybroker-sync/scripts/requirements.txt
 
       - name: Completar metadatos en Odoo
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.backfill_metadata) || github.event_name == 'push' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill_metadata }}
         env:
           ODOO_URL: ${{ vars.ODOO_URL }}
           ODOO_DB: ${{ vars.ODOO_DB }}
