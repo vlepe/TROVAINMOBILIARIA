@@ -2,12 +2,6 @@ name: Sincronizar viviendas Odoo -> EasyBroker
 
 # Se ejecuta cada 6 horas y también se puede lanzar a mano desde la pestaña
 # "Actions" de GitHub (botón "Run workflow") para probar sin esperar al cron.
-#
-# Reactivado el 04/sep/2026 después de arreglar sync_to_easybroker.py para
-# que use el modelo y los campos reales de Odoo (antes apuntaba a un modelo
-# "x_vivienda" que nunca se construyó, por eso estuvo fallando y se había
-# comentado este disparador -- ver el historial de corridas de este
-# workflow para esas fallas).
 on:
   schedule:
     - cron: "0 */6 * * *"
@@ -18,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+  # Disparador temporal y acotado para ejecutar el backfill confirmado.
+  # Se retirará junto con el archivo marcador al terminar.
+  push:
+    paths:
+      - ".github/backfill-property-metadata"
 
 jobs:
   sync:
@@ -36,7 +35,7 @@ jobs:
         run: pip install -r integrations/odoo-easybroker-sync/scripts/requirements.txt
 
       - name: Completar metadatos en Odoo
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill_metadata }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.backfill_metadata) || github.event_name == 'push' }}
         env:
           ODOO_URL: ${{ vars.ODOO_URL }}
           ODOO_DB: ${{ vars.ODOO_DB }}
