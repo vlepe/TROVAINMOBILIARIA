@@ -100,6 +100,7 @@ panel de EasyBroker para confirmar que las fotos sí aparecen.
 """
 
 import base64
+import html
 import logging
 import os
 import re
@@ -362,6 +363,14 @@ def resolve_location_name(neighborhood, city, state, postal_code=None):
         return _LOCATION_CACHE[cache_key]
 
     target_neighborhood = _normalize_location_text(neighborhood)
+    neighborhood_aliases = {
+        # Nombre comercial en Odoo -> nombre oficial del catálogo EasyBroker.
+        "geovillas la arbolada plus": "la arbolada plus",
+    }
+    target_neighborhood = neighborhood_aliases.get(
+        target_neighborhood,
+        target_neighborhood,
+    )
     target_city = _normalize_location_text(city)
     target_state = _normalize_location_text(state)
 
@@ -627,6 +636,70 @@ def update_odoo_reference(db, uid, api_key, models, record_id, public_id):
     models.execute_kw(db, uid, api_key, ODOO_MODEL, "write", [[record_id], {FIELD_REFERENCE: public_id}])
 
 
+def emit_github_warning(message):
+    """Crea una anotación amarilla visible en el resumen de GitHub Actions."""
+    escaped = str(message).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::warning::{escaped}")
+
+
+def send_warning_email(db, uid, api_key, models, recipients, warning_lines, counts):
+    """Envía desde Odoo un solo resumen por corrida con datos pendientes."""
+    recipients = ",".join(
+        address.strip()
+        for address in recipients.replace(";", ",").split(",")
+        if address.strip()
+    )
+    if not recipients or not warning_lines:
+        return
+
+    created, updated, unpublished, skipped, errors = counts
+    run_url = ""
+    if os.environ.get("GITHUB_SERVER_URL") and os.environ.get("GITHUB_REPOSITORY") and os.environ.get("GITHUB_RUN_ID"):
+        run_url = (
+            f"{os.environ['GITHUB_SERVER_URL']}/"
+            f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+            f"{os.environ['GITHUB_RUN_ID']}"
+        )
+
+    items = "".join(
+        f"<li>{html.escape(line.lstrip('- '))}</li>"
+        for line in warning_lines
+    )
+    run_link = (
+        f'<p><a href="{html.escape(run_url)}">Abrir la ejecución en GitHub Actions</a></p>'
+        if run_url else ""
+    )
+    body_html = f"""
+        <p>La sincronización Odoo → EasyBroker terminó con advertencias.</p>
+        <p>
+            Creadas: {created} · Actualizadas: {updated} ·
+            Despublicadas: {unpublished} · Omitidas: {skipped} ·
+            Con error: {errors}
+        </p>
+        <p>Propiedades y datos que requieren corrección:</p>
+        <ul>{items}</ul>
+        {run_link}
+        <p>Este mensaje fue generado automáticamente por TROVAINMOBILIARIA.</p>
+    """
+
+    mail_id = models.execute_kw(
+        db, uid, api_key,
+        "mail.mail", "create",
+        [{
+            "subject": "[Trova] Advertencias de sincronización Odoo → EasyBroker",
+            "body_html": body_html,
+            "email_to": recipients,
+            "auto_delete": False,
+        }],
+    )
+    models.execute_kw(
+        db, uid, api_key,
+        "mail.mail", "send",
+        [[mail_id]],
+    )
+    log.info("Correo de advertencias enviado a %s.", recipients)
+
+
 def main():
     log.info("Conectando a Odoo...")
     odoo_url, db, uid, api_key, models = connect_odoo()
@@ -749,7 +822,32 @@ def main():
             )
             fh.writelines(line + "\n" for line in summary_lines)
 
-    if errors and not (created or updated):
+    warning_lines = [
+        line for line in summary_lines
+        if line.startswith("- SALTADO:") or line.startswith("- ERROR:")
+    ]
+    for warning_line in warning_lines:
+        emit_github_warning(warning_line.lstrip("- "))
+
+    recipients = env("SYNC_ALERT_EMAILS", required=False, default="")
+    if warning_lines and recipients:
+        try:
+            send_warning_email(
+                db, uid, api_key, models,
+                recipients,
+                warning_lines,
+                (created, updated, unpublished, skipped, errors),
+            )
+        except Exception as exc:
+            email_warning = f"No se pudo enviar el correo de advertencias desde Odoo: {exc}"
+            log.warning(email_warning)
+            emit_github_warning(email_warning)
+
+    # Una corrida parcial queda en verde con anotaciones amarillas. Solo se
+    # marca roja cuando hubo errores de API y ninguna operación externa logró
+    # completarse; las propiedades omitidas por datos faltantes no son una
+    # falla técnica del workflow.
+    if errors and not (created or updated or unpublished):
         sys.exit(1)
 
 
