@@ -313,7 +313,7 @@ def build_image_urls(odoo_url, image_ids):
 
 
 # Cache en memoria (dura solo la corrida) para no repetir la misma búsqueda
-de ubicación varias veces si varias propiedades comparten colonia/ciudad.
+# de ubicación varias veces si varias propiedades comparten colonia/ciudad.
 _LOCATION_CACHE = {}
 
 
