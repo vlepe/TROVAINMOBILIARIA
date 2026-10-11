@@ -36,4 +36,5 @@ jobs:
           ODOO_USERNAME: ${{ vars.ODOO_USERNAME }}
           ODOO_API_KEY: ${{ secrets.API_ODOO_TROVA }}
           EASYBROKER_API_KEY: ${{ secrets.API_EASY_BROKER }}
+          SYNC_ALERT_EMAILS: ${{ secrets.SYNC_ALERT_EMAILS }}
         run: python integrations/odoo-easybroker-sync/scripts/sync_to_easybroker.py
