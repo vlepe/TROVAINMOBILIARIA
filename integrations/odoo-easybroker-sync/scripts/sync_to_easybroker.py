@@ -692,11 +692,23 @@ def send_warning_email(db, uid, api_key, models, recipients, warning_lines, coun
             "auto_delete": False,
         }],
     )
-    models.execute_kw(
-        db, uid, api_key,
-        "mail.mail", "send",
-        [[mail_id]],
-    )
+    try:
+        models.execute_kw(
+            db, uid, api_key,
+            "mail.mail", "send",
+            [[mail_id]],
+        )
+    except xmlrpc.client.Fault as exc:
+        # En Odoo SaaS 19.4 mail.mail.send() ejecuta el envío pero devuelve
+        # None. El servidor XML-RPC intenta serializar ese None con
+        # allow_none=False y genera este Fault después de haber enviado.
+        # Se reconoce únicamente ese mensaje exacto; cualquier otro Fault sí
+        # se propaga como error real de correo.
+        if "cannot marshal None unless allow_none is enabled" not in str(exc):
+            raise
+        log.info(
+            "Odoo ejecutó el envío; su respuesta vacía no es serializable por XML-RPC."
+        )
     log.info("Correo de advertencias enviado a %s.", recipients)
 
 
