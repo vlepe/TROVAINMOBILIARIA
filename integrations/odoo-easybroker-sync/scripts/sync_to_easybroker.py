@@ -378,6 +378,7 @@ def resolve_location_name(neighborhood, city, state, postal_code=None):
     best_match = None
     best_score = -1
     seen_params = set()
+    neighborhood_candidates = set()
 
     for params in requests_to_try:
         params_key = tuple(sorted(params.items()))
@@ -411,10 +412,13 @@ def resolve_location_name(neighborhood, city, state, postal_code=None):
         for node in _iter_location_nodes(data):
             if str(node.get("type") or "").casefold() != "neighborhood":
                 continue
-            if _normalize_location_text(node.get("name")) != target_neighborhood:
-                continue
 
             full_name = node.get("full_name") or node.get("name")
+            if full_name:
+                neighborhood_candidates.add(full_name)
+
+            if _normalize_location_text(node.get("name")) != target_neighborhood:
+                continue
             if not full_name:
                 continue
 
@@ -434,6 +438,14 @@ def resolve_location_name(neighborhood, city, state, postal_code=None):
 
         if best_score == 3:
             break
+
+    if not best_match and neighborhood_candidates:
+        shown_candidates = " | ".join(sorted(neighborhood_candidates)[:20])
+        log.warning(
+            "  Colonias devueltas por EasyBroker para %r: %s",
+            neighborhood,
+            shown_candidates,
+        )
 
     _LOCATION_CACHE[cache_key] = best_match
     return best_match
