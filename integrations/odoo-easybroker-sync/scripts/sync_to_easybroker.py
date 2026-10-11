@@ -105,6 +105,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import xmlrpc.client
 
 import requests
@@ -317,69 +318,125 @@ def build_image_urls(odoo_url, image_ids):
 _LOCATION_CACHE = {}
 
 
-def resolve_location_name(neighborhood, city, state):
-    """Busca en el catálogo de ubicaciones de EasyBroker (GET /locations) el
-    nombre EXACTO que hay que mandar en location.name.
+def _normalize_location_text(value):
+    """Normaliza nombres para comparar acentos, mayúsculas y puntuación."""
+    normalized = unicodedata.normalize("NFKD", value or "")
+    without_marks = "".join(
+        character for character in normalized
+        if not unicodedata.combining(character)
+    )
+    return re.sub(r"[^a-z0-9]+", " ", without_marks.casefold()).strip()
 
-    Descubierto el 04/sep/2026: a diferencia de lo que se pensaba al leer la
-    documentación (que solo decía "debe coincidir con una ubicación
-    encontrada a través del endpoint locations"), EasyBroker valida esto de
-    verdad -- mandar un texto armado a mano (aunque tenga el formato
-    correcto "Colonia, Ciudad, Estado") lo rechaza con HTTP 422 si no
-    coincide con un registro real de su catálogo. Por eso hay que preguntarle
-    primero a /locations y usar el "full_name" que regresa, en vez de
-    construir el string nosotros mismos.
 
-    Intenta primero con la combinación más específica (colonia + ciudad +
-    estado) y se va simplificando si no hay coincidencia, para maximizar la
-    probabilidad de encontrar algo válido. Regresa None si ninguna búsqueda
-    encuentra nada -- en ese caso el llamador debe SALTAR la propiedad en vez
-    de mandar una ubicación inventada.
+def _iter_location_nodes(data):
+    """Recorre la ubicación devuelta por EasyBroker y todos sus hijos."""
+    if isinstance(data, dict):
+        yield data
+        for child in data.get("localities") or []:
+            yield from _iter_location_nodes(child)
+    elif isinstance(data, list):
+        for item in data:
+            yield from _iter_location_nodes(item)
+
+
+def resolve_location_name(neighborhood, city, state, postal_code=None):
+    """Regresa el full_name exacto de una colonia del catálogo EasyBroker.
+
+    GET /locations puede responder con una ciudad o un estado como nodo raíz y
+    colocar las colonias en localities. Tomar siempre el full_name del nodo
+    raíz hace que EasyBroker reciba una ciudad como ubicación y rechace la
+    publicación con "neighborhood es requerida para publicar".
+
+    Esta función acepta únicamente nodos con type == "Neighborhood" cuyo
+    nombre normalizado coincida exactamente con la colonia capturada en Odoo.
+    Ciudad y estado solo se usan para escoger entre colonias homónimas. Si no
+    hay una coincidencia inequívoca, se regresa None y la propiedad se salta.
     """
-    cache_key = (neighborhood or "", city or "", state or "")
+    cache_key = (
+        neighborhood or "",
+        city or "",
+        state or "",
+        postal_code or "",
+    )
     if cache_key in _LOCATION_CACHE:
         return _LOCATION_CACHE[cache_key]
 
-    candidates = []
-    if neighborhood and city and state:
-        candidates.append(f"{neighborhood}, {city}, {state}")
-    if city and state:
-        candidates.append(f"{city}, {state}")
-    if neighborhood:
-        candidates.append(neighborhood)
-    if city:
-        candidates.append(city)
-    if state:
-        candidates.append(state)
+    target_neighborhood = _normalize_location_text(neighborhood)
+    target_city = _normalize_location_text(city)
+    target_state = _normalize_location_text(state)
 
-    result = None
-    for query in candidates:
+    requests_to_try = []
+    if neighborhood and city and state:
+        requests_to_try.append(
+            {"query": f"{neighborhood}, {city}, {state}"}
+        )
+    if postal_code:
+        requests_to_try.append({"postal_code": postal_code})
+    if neighborhood:
+        requests_to_try.append({"query": neighborhood})
+
+    best_match = None
+    best_score = -1
+    seen_params = set()
+
+    for params in requests_to_try:
+        params_key = tuple(sorted(params.items()))
+        if params_key in seen_params:
+            continue
+        seen_params.add(params_key)
+
         try:
             response = requests.get(
                 f"{EASYBROKER_BASE_URL}/locations",
-                params={"query": query},
+                params=params,
                 headers=easybroker_headers(),
                 timeout=15,
             )
         except requests.RequestException as exc:
-            log.warning("  No se pudo consultar /locations para %r: %s", query, exc)
+            log.warning(
+                "  No se pudo consultar /locations con %r: %s",
+                params,
+                exc,
+            )
             continue
 
-        if response.status_code == 200:
-            try:
-                data = response.json()
-            except ValueError:
+        if response.status_code != 200:
+            continue
+
+        try:
+            data = response.json()
+        except ValueError:
+            continue
+
+        for node in _iter_location_nodes(data):
+            if str(node.get("type") or "").casefold() != "neighborhood":
                 continue
-            full_name = data.get("full_name") or data.get("name")
-            if full_name:
-                result = full_name
+            if _normalize_location_text(node.get("name")) != target_neighborhood:
+                continue
+
+            full_name = node.get("full_name") or node.get("name")
+            if not full_name:
+                continue
+
+            normalized_full_name = _normalize_location_text(full_name)
+            score = 0
+            if target_city and target_city in normalized_full_name:
+                score += 2
+            if target_state and target_state in normalized_full_name:
+                score += 1
+
+            if score > best_score:
+                best_match = full_name
+                best_score = score
+
+            if best_score == 3:
                 break
-        # 404 (no encontrado) u otro código: se prueba con el siguiente
-        # candidato más simple, sin tratarlo como error.
 
-    _LOCATION_CACHE[cache_key] = result
-    return result
+        if best_score == 3:
+            break
 
+    _LOCATION_CACHE[cache_key] = best_match
+    return best_match
 
 def validate_publication_fields(record):
     """Valida los datos mínimos para que una vivienda publicada en Odoo pueda
@@ -446,7 +503,12 @@ def build_easybroker_payload(record, odoo_url):
     # de ubicaciones de EasyBroker (ver resolve_location_name) -- armar el
     # string nosotros mismos (aunque tenga el formato correcto) no basta,
     # EasyBroker lo rechaza si no coincide con un registro real.
-    location_name = resolve_location_name(neighborhood, city, state_name)
+    location_name = resolve_location_name(
+        neighborhood,
+        city,
+        state_name,
+        record.get(FIELD_ZIP) or "",
+    )
     if not location_name:
         return None, (
             "no se encontró en el catálogo de ubicaciones de EasyBroker "
@@ -455,10 +517,9 @@ def build_easybroker_payload(record, odoo_url):
             "o consulta GET /locations en EasyBroker para ver el nombre exacto que espera."
         )
 
-    location = {
-        "name": location_name,
-        "postal_code": record.get(FIELD_ZIP) or "",
-    }
+    location = {"name": location_name}
+    if record.get(FIELD_ZIP):
+        location["postal_code"] = record[FIELD_ZIP]
     if record.get(FIELD_SHOW_EXACT_ADDRESS) and record.get(FIELD_EXACT_ADDRESS):
         location["street"] = record[FIELD_EXACT_ADDRESS]
     if record.get(FIELD_LAT) and record.get(FIELD_LNG):
@@ -479,15 +540,7 @@ def build_easybroker_payload(record, odoo_url):
             }
         ],
         "location": location,
-        "neighborhood": neighborhood,
     }
-
-    if city:
-        payload["city"] = city
-    if state_name:
-        payload["state"] = state_name
-    if record.get(FIELD_ZIP):
-        payload["postal_code"] = record.get(FIELD_ZIP)
 
     if record.get(FIELD_LOT_SIZE):
         payload["lot_size"] = record[FIELD_LOT_SIZE]
