@@ -11,7 +11,13 @@ name: Sincronizar viviendas Odoo -> EasyBroker
 on:
   schedule:
     - cron: "0 */6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      backfill_metadata:
+        description: "Fijar Venta/Disponible y completar ubicación desde EasyBroker"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   sync:
@@ -28,6 +34,16 @@ jobs:
 
       - name: Instalar dependencias
         run: pip install -r integrations/odoo-easybroker-sync/scripts/requirements.txt
+
+      - name: Completar metadatos en Odoo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill_metadata }}
+        env:
+          ODOO_URL: ${{ vars.ODOO_URL }}
+          ODOO_DB: ${{ vars.ODOO_DB }}
+          ODOO_USERNAME: ${{ vars.ODOO_USERNAME }}
+          ODOO_API_KEY: ${{ secrets.API_ODOO_TROVA }}
+          EASYBROKER_API_KEY: ${{ secrets.API_EASY_BROKER }}
+        run: python integrations/odoo-easybroker-sync/scripts/backfill_property_sync_fields.py
 
       - name: Ejecutar la sincronización
         env:
